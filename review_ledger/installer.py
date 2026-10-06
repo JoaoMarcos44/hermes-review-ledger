@@ -61,9 +61,23 @@ def _lock(home: Path):
     path = home / ".review-ledger-install.lock"
     if _exists(path):
         _plain(path)
-    descriptor = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+        created = True
+    except FileExistsError:
+        descriptor = os.open(path, flags)
+        created = False
     with os.fdopen(descriptor, "r+b") as handle:
-        if os.fstat(handle.fileno()).st_size == 0:
+        opened = os.fstat(handle.fileno())
+        _plain(path)
+        current = path.lstat()
+        if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+                or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)):
+            raise InstallError("Profile lock must be a regular file without physical aliases; no lock content was changed")
+        # Never initialize an existing file. Native locks can cover byte zero
+        # beyond EOF, so an interrupted first creation remains usable as-is.
+        if created:
             handle.write(b"\0")
             handle.flush()
         handle.seek(0)

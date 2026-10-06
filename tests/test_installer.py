@@ -268,6 +268,32 @@ def test_permission_failure_is_clear_and_preserves_config(profile, monkeypatch):
     assert retained(profile) == before
 
 
+def test_existing_empty_lock_is_used_without_writing_content(profile):
+    lock = profile / ".review-ledger-install.lock"
+    lock.touch()
+    before = retained(profile)
+    assert i.install(profile)["state"] == "installed"
+    assert lock.read_bytes() == b""
+    assert retained(profile) == before
+
+
+def test_ambiguous_lock_descriptor_is_rejected_before_writing(profile, monkeypatch):
+    # Validate the descriptor guard with synthetic metadata, not a filesystem
+    # alias to another file. No attack or vulnerability reproduction is run.
+    from types import SimpleNamespace
+    original = os.fstat
+    def multiple_links(descriptor):
+        value = original(descriptor)
+        return SimpleNamespace(st_mode=value.st_mode, st_nlink=2,
+                               st_dev=value.st_dev, st_ino=value.st_ino)
+    monkeypatch.setattr(os, "fstat", multiple_links)
+    before = retained(profile)
+    with pytest.raises(i.InstallError, match="physical aliases"):
+        i.install(profile)
+    assert (profile / ".review-ledger-install.lock").read_bytes() == b""
+    assert retained(profile) == before
+
+
 def test_real_separate_process_lock(profile, tmp_path):
     ready = tmp_path / "ready"
     release = tmp_path / "release"

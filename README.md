@@ -89,6 +89,11 @@ to the entire profile: the complete V1 operator CLI requires `in_process`.
 If a profile requires `host` isolation, choose a separate suitable profile. The
 installer does not change this policy or silently grant activation.
 
+Existing enabled/disabled entries and Hermes' own profile migration rules still
+govern what loads at the next startup. Installing or upgrading code does not
+reset that policy. Inspect the selected profile's configuration and plugin list
+before restarting, particularly when the plugin was enabled previously.
+
 ```yaml
 plugins:
   isolation: in_process
@@ -149,6 +154,10 @@ installer state containing the previous code; preserve it and rerun after fixing
 access. Partial cleanup of unchanged owned files is retryable. Configuration and
 plugin-data are never part of this transaction. The persistent lock/state files
 are small management metadata, not ledger storage.
+
+The lock descriptor must identify a regular file without physical aliases.
+Existing lock contents are never initialized or rewritten; an empty lock left
+by an interrupted first creation can still be locked and reused.
 
 A hard termination while preparing a new tree can leave a hidden
 `.review-ledger-prepare-*` directory beside the profile configuration. It is not
