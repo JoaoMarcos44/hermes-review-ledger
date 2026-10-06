@@ -54,15 +54,29 @@ def handle(ctx, name: str, arguments: dict, **kwargs) -> str:
             if ("run_id" in args) == ("pull_number" in args):
                 raise LedgerError("invalid_input", "Select exactly one run_id or pull_number for status")
             if "pull_number" in args:
-                if "history_offset" in args:
-                    raise LedgerError("invalid_input", "PR history uses offset, not history_offset")
+                if any(key in args for key in ("history_offset", "detail_collection", "detail_id")):
+                    raise LedgerError("invalid_input", "PR history uses offset without history_offset or detail selectors")
                 result = ledger.history(repository, args["pull_number"],
-                                        limit=args.get("limit", 10), offset=args.get("offset", 0))
+                                        limit=args.get("limit", 10), offset=args.get("offset", 0),
+                                        max_chars=args.get("max_chars", 24_000))
+            elif "detail_collection" in args:
+                if any(key in args for key in ("limit", "history_offset")):
+                    raise LedgerError("invalid_input", "Detail retrieval uses a character offset without list or history window fields")
+                if args["detail_collection"] == "run" and "detail_id" in args:
+                    raise LedgerError("invalid_input", "Run detail uses run_id without detail_id")
+                result = ledger.status_detail(
+                    repository, args["run_id"], actor, detail_collection=args["detail_collection"],
+                    detail_id=args.get("detail_id"), offset=args.get("offset", 0),
+                    max_chars=args.get("max_chars", 24_000),
+                )
             else:
+                if "detail_id" in args:
+                    raise LedgerError("invalid_input", "detail_id requires detail_collection")
                 result = ledger.status(
                     repository, args["run_id"], actor,
                     limit=args.get("limit", 10), offset=args.get("offset", 0),
                     history_offset=args.get("history_offset", 0),
+                    max_chars=args.get("max_chars", 24_000),
                 )
         elif name == "ledger_run":
             result = ledger.run_action(
@@ -99,14 +113,14 @@ def handle(ctx, name: str, arguments: dict, **kwargs) -> str:
                 limit=args.get("limit", 25), offset=args.get("offset", 0),
                 max_chars=args.get("max_chars", 100000),
             )
-        return json.dumps(result, ensure_ascii=False, allow_nan=False)
+        return json.dumps(result, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     except (LedgerError, GitHubError) as exc:
-        return json.dumps({"state": "error", "error": {"code": exc.code, "message": str(exc)}})
+        return json.dumps({"state": "error", "error": {"code": exc.code, "message": str(exc)}}, separators=(",", ":"))
     except (TypeError, ValueError, KeyError):
-        return json.dumps({"state": "error", "error": {"code": "invalid_input", "message": "Invalid or missing operation fields"}})
+        return json.dumps({"state": "error", "error": {"code": "invalid_input", "message": "Invalid or missing operation fields"}}, separators=(",", ":"))
     except Exception:
         # No raw exception/HTTP body/configuration in model-visible responses.
-        return json.dumps({"state": "error", "error": {"code": "internal_error", "message": "Ledger operation failed; no clean-review result is available"}})
+        return json.dumps({"state": "error", "error": {"code": "internal_error", "message": "Ledger operation failed; no clean-review result is available"}}, separators=(",", ":"))
 
 
 def _open_review(ctx, ledger: Ledger, repository: str, actor: Actor, args: dict) -> dict:
@@ -115,13 +129,21 @@ def _open_review(ctx, ledger: Ledger, repository: str, actor: Actor, args: dict)
     if not separator or not owner or not name or "/" in name:
         raise LedgerError("invalid_input", "Repository must be owner/name")
     number = integer(args["pull_number"], "pull_number", 1, 2**31 - 1)
+    try:
+        from agent.secret_scope import UnscopedSecretError, get_secret
+    except ImportError:
+        raise LedgerError("unsupported_host_context", "Hermes profile-scoped credential resolution is required") from None
     client = GitHubClient(
         allowed_repositories=sorted(ledger.authorized),
         token_env=ctx.get_config("github_token_env", default="REVIEW_LEDGER_GITHUB_TOKEN"),
+        token_resolver=get_secret,
         timeout=10, max_pages=3, max_files=200, max_patch_chars=4000,
     )
     generation = ledger.open_generation(repository, number)
-    snapshot = client.fetch_snapshot(owner, name, number).as_dict()
+    try:
+        snapshot = client.fetch_snapshot(owner, name, number).as_dict()
+    except UnscopedSecretError:
+        raise LedgerError("secret_scope_required", "Hermes profile secret scope is required to read the configured GitHub credential") from None
     result = ledger.open(
         snapshot, actor, request_key, expected_open_generation=generation,
     )
@@ -130,9 +152,11 @@ def _open_review(ctx, ledger: Ledger, repository: str, actor: Actor, args: dict)
         context_budget=ledger.config["context_budget"],
     )
     # Patches are untrusted reference data; host tools perform any inspection.
-    result["files"] = snapshot["files"][:5]
+    retained_names = {item["filename"] for item in result["run"]["snapshot"]["files"]}
+    result["files"] = [item for item in snapshot["files"] if item["filename"] in retained_names][:5]
     result["files_returned"] = len(result["files"])
     result["files_omitted_from_response"] = max(0, len(snapshot["files"]) - len(result["files"]))
+    result["files_not_retained_in_snapshot"] = sum(item["filename"] not in retained_names for item in snapshot["files"])
     result["patch_notice"] = "GitHub patches may be missing or truncated; no code was executed."
     return result
 
@@ -175,8 +199,11 @@ def schema(name, description, properties, required):
 SCHEMAS = {
     "ledger_open": schema("ledger_open", "Read the current authorized GitHub PR snapshot and atomically open or accompany its investigation. No code execution.",
                           {"repository": BASE["repository"], "pull_number": I, "request_key": WRITE["request_key"]}, ["repository", "pull_number", "request_key"]),
-    "ledger_status": schema("ledger_status", "Read bounded run evidence and related snapshot references by run_id, or discover runs by pull_number. Select exactly one. No session takeover.",
-                            {**BASE, "pull_number": I, "limit": I, "offset": I, "history_offset": I}, ["repository"]),
+    "ledger_status": schema("ledger_status", "Read run evidence or PR history within a serialized character budget. Oversized items return explicit detail references. Select exactly one run_id or pull_number. With run_id and detail_collection, retrieve complete record JSON in bounded pages and verify the assembled digest; offset is then a character position, and limit/history_offset are forbidden. No session takeover.",
+                            {**BASE, "pull_number": I, "limit": I, "offset": I, "history_offset": I,
+                             "max_chars": {"type": "integer", "minimum": 4000, "maximum": 64000},
+                             "detail_collection": {"type": "string", "enum": ["run", "observation", "assessment", "finding"]},
+                             "detail_id": {"type": "string", "description": "Required for observation, assessment or finding detail; omit for run detail"}}, ["repository"]),
     "ledger_run": schema("ledger_run", "Acquire an unowned run or release, pause, complete the current owned generation. Never transfer another session's ownership.",
                          {**WRITE, "action": {"type": "string", "enum": ["acquire", "release", "pause", "complete"]}, "note": S}, [*WRITE, "action"]),
     "ledger_record": schema("ledger_record", "Record agent-reported evidence, propose a finding, assess it for this snapshot, or invalidate an owned-run observation. Read the skill for action-specific data fields.",

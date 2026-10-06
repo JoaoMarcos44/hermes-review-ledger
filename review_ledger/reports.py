@@ -30,14 +30,16 @@ def export(ledger: Ledger, repository: str, run_id: str, actor: Actor, *, format
             queries = {
                 "observations": "SELECT * FROM observations WHERE repository_id=? AND run_id=? ORDER BY id LIMIT ? OFFSET ?",
                 "assessments": "SELECT a.*,f.claim FROM assessments a JOIN findings f ON a.finding_id=f.id WHERE a.repository_id=? AND a.run_id=? ORDER BY a.created_at,a.id LIMIT ? OFFSET ?",
-                "findings": "SELECT f.* FROM findings f WHERE f.repository_id=? AND (f.origin_run_id=? OR EXISTS (SELECT 1 FROM assessments a WHERE a.finding_id=f.id AND a.run_id=?)) ORDER BY f.id LIMIT ? OFFSET ?",
                 "lesson_uses": "SELECT * FROM lesson_uses WHERE repository_id=? AND run_id=? ORDER BY id LIMIT ? OFFSET ?",
             }
             for name, query in queries.items():
-                params = (scope.repository_id, run_id, run_id, limit + 1, offset) if name == "findings" else (scope.repository_id, run_id, limit + 1, offset)
+                params = (scope.repository_id, run_id, limit + 1, offset)
                 rows = [dict(r) for r in conn.execute(query, params)]
                 omitted[name] = len(rows) > limit
                 collections[name] = rows[:limit]
+            findings = ledger._findings(conn, scope, run_id, limit + 1, offset)
+            omitted["findings"] = len(findings) > limit
+            collections["findings"] = findings[:limit]
             for observation in collections["observations"]:
                 if observation["artifact_id"]:
                     observation["artifact"] = ledger.store.artifact_status(observation["artifact_id"])

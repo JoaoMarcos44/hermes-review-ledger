@@ -17,6 +17,19 @@ Use this skill when the user asks to investigate or resume a GitHub PR with a du
 6. Pause and state missing evidence or budget with `ledger_run(action="pause", note=...)`. Pausing releases ownership. Complete with `action="complete"` only when the bounded investigation is finished. Persistence supports later resumption; nothing continues autonomously after the conversation closes.
 7. Call `ledger_export` with `format="markdown"` or `"json"`. Follow pagination and omission flags. Markdown shows initial captured files/patch completeness, omitted files and truncation reasons; unknown fields remain unknown. Later observations do not retroactively make that capture complete. Exports do not publish, synchronize, or import anything.
 
+`ledger_status` keeps its complete JSON response within `max_chars` (default
+24,000; range 4,000–64,000). A large record may be returned as a reference with
+`detail_required`, `detail_collection`, and its ID. Retrieve it with the same
+tool, repository and run using `detail_collection` (`run`, `observation`,
+`assessment`, or `finding`) and `detail_id`; omit `detail_id` for `run`.
+Do not supply `limit` or `history_offset` in detail mode. Here `offset` is a
+character position in complete canonical JSON. Follow `next_offset`, concatenate
+all `content` fragments, require a matching `content_sha256` on every page, and
+verify the reassembled UTF-8 SHA-256 before treating it as complete evidence.
+Restart if the digest changes. Continue regular status pagination only past the
+records returned on that page. Detail references and partial pages are not full
+observations or assessments.
+
 All tools require repository scope; run operations require `run_id`, except the `ledger_status` PR-index selector described above. The host injects session identity. Never put a session ID, profile, owner, provenance, approval, or permissions field into model arguments.
 
 ## Record contracts

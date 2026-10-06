@@ -15,7 +15,13 @@ from uuid import uuid4
 
 from .models import Actor, IDENTIFIER, LedgerError, Scope, canonical, digest, integer, text
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+MIGRATIONS = ("001_initial.sql", "002_query_indexes.sql")
+LEDGER_TABLES = frozenset({
+    "ledger_meta", "repositories", "reviews", "runs", "observations", "findings",
+    "assessments", "assessment_sources", "lesson_versions", "lesson_sources",
+    "lesson_uses", "audit_events", "idempotency",
+})
 MAX_ARTIFACT_BYTES = 64 * 1024
 MIN_SQLITE_VERSION = (3, 35, 0)
 DEFAULT_JOURNAL_MODE = "delete"
@@ -112,9 +118,6 @@ class Store:
             conn.execute(f"PRAGMA busy_timeout={self.busy_timeout_ms}")
             conn.execute("PRAGMA synchronous=FULL")
             self._journal_mode(conn)
-            version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version > SCHEMA_VERSION:
-                raise LedgerError("schema_too_new", "Database schema is newer than this plugin; no changes made")
             self._initialize(conn)
             yield conn
         except sqlite3.OperationalError as exc:
@@ -125,26 +128,46 @@ class Store:
         finally:
             conn.close()
 
-    def _initialize(self, conn):
+    def _checked_version(self, conn):
+        """Read the schema/profile fences before any migration or journal change."""
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if version < SCHEMA_VERSION:
-            with self.transaction(conn):
-                version = conn.execute("PRAGMA user_version").fetchone()[0]
-                if version > SCHEMA_VERSION:
-                    raise LedgerError("schema_too_new", "Database schema is newer than this plugin")
-                if version == 0:
-                    objects = conn.execute("SELECT name FROM sqlite_master").fetchall()
-                    if objects:
-                        raise LedgerError("unknown_schema", "Unversioned nonempty database is not a ledger")
-                    migration = (Path(__file__).parent / "migrations" / "001_initial.sql").read_text(encoding="utf-8")
-                    for statement in migration.split(";"):
-                        if statement.strip():
-                            conn.execute(statement)
-                    conn.execute("INSERT INTO ledger_meta VALUES ('profile_key',?)", (self.profile_key,))
-                    conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        if version > SCHEMA_VERSION:
+            raise LedgerError("schema_too_new", "Database schema is newer than this plugin; no changes made")
+        objects = conn.execute("SELECT name,type FROM sqlite_master").fetchall()
+        if version == 0:
+            if objects:
+                raise LedgerError("unknown_schema", "Unversioned nonempty database is not a ledger")
+            return version
+        tables = {row[0] for row in objects if row[1] == "table"}
+        if version < 0 or not LEDGER_TABLES.issubset(tables):
+            raise LedgerError("unknown_schema", "Versioned database does not have the ledger schema")
         stored = conn.execute("SELECT value FROM ledger_meta WHERE key='profile_key'").fetchone()
         if not stored or stored[0] != self.profile_key:
             raise LedgerError("profile_mismatch", "This database belongs to a different resolved profile")
+        return version
+
+    @staticmethod
+    def _migration(conn, version):
+        migration = (Path(__file__).parent / "migrations" / MIGRATIONS[version - 1]).read_text(encoding="utf-8")
+        for statement in migration.split(";"):
+            if statement.strip():
+                conn.execute(statement)
+
+    def _initialize(self, conn):
+        version = self._checked_version(conn)
+        if version < SCHEMA_VERSION:
+            with self.transaction(conn):
+                # Another process may have initialized or upgraded while we
+                # waited for the writer lock. Recheck both fences under it.
+                version = self._checked_version(conn)
+                if version == 0:
+                    self._migration(conn, 1)
+                    conn.execute("INSERT INTO ledger_meta VALUES ('profile_key',?)", (self.profile_key,))
+                    version = 1
+                    conn.execute("PRAGMA user_version=1")
+                for next_version in range(version + 1, SCHEMA_VERSION + 1):
+                    self._migration(conn, next_version)
+                    conn.execute(f"PRAGMA user_version={next_version}")
         # New/rollback databases explicitly use DELETE. Preserve legacy WAL only
         # on known-fixed runtimes, without attempting a concurrent mode migration.
         # Journal changes remain behind the schema and profile fences above.
@@ -179,22 +202,32 @@ class Store:
         text(key, "request_key", 128)
         fingerprint = digest(payload)
         with self.connect() as conn, self.transaction(conn):
-            self.repository(conn, scope)
-            old = conn.execute(
-                "SELECT payload_hash,result_json FROM idempotency WHERE repository_id=? AND operation=? AND scope=? AND request_key=?",
-                (scope.repository_id, operation, operation_scope, key),
-            ).fetchone()
-            if old:
-                if old[0] != fingerprint:
-                    raise LedgerError("idempotency_conflict", "The request key was already used with a different payload")
+            old = self.receipt(conn, scope, operation, operation_scope, key, payload)
+            if old is not None:
                 if replay_validator is not None:
                     replay_validator(conn)
-                return json.loads(old[1])
+                return old
             result = fn(conn)
             result["receipt_notice"] = "Operation receipt; use ledger_status for current ownership and snapshot state."
             conn.execute("INSERT INTO idempotency VALUES (?,?,?,?,?,?,?)",
                          (scope.repository_id, operation, operation_scope, key, fingerprint, canonical(result), now()))
             return result
+
+    @staticmethod
+    def receipt(conn, scope: Scope, operation: str, operation_scope: str, key: str, payload: dict) -> dict | None:
+        """Read an exact scoped receipt; it grants no current write ownership."""
+        text(key, "request_key", 128)
+        fingerprint = digest(payload)
+        Store.repository(conn, scope)
+        old = conn.execute(
+            "SELECT payload_hash,result_json FROM idempotency WHERE repository_id=? AND operation=? AND scope=? AND request_key=?",
+            (scope.repository_id, operation, operation_scope, key),
+        ).fetchone()
+        if old is None:
+            return None
+        if old[0] != fingerprint:
+            raise LedgerError("idempotency_conflict", "The request key was already used with a different payload")
+        return json.loads(old[1])
 
     @staticmethod
     def repository(conn, scope: Scope):

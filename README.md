@@ -109,7 +109,7 @@ plugins:
         context_budget: 6000
 ```
 
-Use the standard Hermes environment configuration to supply `REVIEW_LEDGER_GITHUB_TOKEN`, or set it in the process environment before starting Hermes. Do not paste tokens into conversations, source files, tool arguments, or reports. The plugin only reads the explicitly configured environment-variable name; it never searches Git, GitHub CLI, netrc, credential helpers, or other programs.
+Use the standard Hermes environment configuration to supply `REVIEW_LEDGER_GITHUB_TOKEN`, or set it in the process environment before starting a single-profile Hermes process. The Hermes adapter resolves the explicitly configured name through the host's profile-scoped `get_secret` API. Gateway and desktop turns therefore use the served profile's credential scope. A required but absent scope is an explicit `secret_scope_required` error; the adapter does not fall back to the process environment itself. The standalone standard-library GitHub client retains an environment resolver unless another resolver is explicitly injected. Do not paste tokens into conversations, source files, tool arguments, or reports. No resolver searches Git, GitHub CLI, netrc, credential helpers, or other programs.
 
 Use a token limited to the authorized repositories and read access required by GitHub's pull-request endpoints. Even public PR reads require an explicitly supplied token in this V1. Authorization is checked before network access and the stable repository ID returned by GitHub is checked against stored identity.
 
@@ -213,12 +213,23 @@ the host's conversation and authorization controls.
 All model-facing operations return JSON with an explicit `state`; failures return `state: error` with a stable `error.code`. Unknown fields are rejected. The host provides profile and session identity separately from model arguments.
 
 1. `ledger_open(repository, pull_number, request_key)` reads GitHub metadata/files, brackets pagination with matching full HEAD/base metadata, and atomically reuses or creates a run. It returns ownership, snapshot, completeness warnings, initial eligible lessons, and a small file preview.
-2. `ledger_status(repository, run_id, limit, offset, history_offset)` reads bounded state and a separately paginated `related_runs` index. A second session can follow the run but cannot write over its owner. Alternatively, `ledger_status(repository, pull_number, limit, offset)` discovers this PR's runs without knowing any stored IDs. Supply exactly one of `run_id` or `pull_number`. The append-only run index uses SQLite insertion order, so clock changes do not change which run was recorded last. References expose revisions/status, not owner sessions or evidence; `latest_recorded` means the latest local record, not a fresh GitHub check.
+2. `ledger_status(repository, run_id, limit, offset, history_offset, max_chars)` reads bounded state and a separately paginated `related_runs` index. Its complete compact JSON response defaults to at most 24,000 characters, configurable per request from 4,000 to 64,000. Large records become explicit detail references; smaller pages advance only past returned records. A second session can follow the run but cannot write over its owner. Alternatively, `ledger_status(repository, pull_number, limit, offset)` discovers this PR's runs without knowing any stored IDs. Supply exactly one of `run_id` or `pull_number`. The append-only run index uses SQLite insertion order, so clock changes do not change which run was recorded last. References expose revisions/status, not owner sessions or evidence; `latest_recorded` means the latest local record, not a fresh GitHub check.
 3. `ledger_record(repository, run_id, generation, request_key, action, data)` records an observation, proposes a finding, records a snapshot-scoped assessment, or invalidates an owned observation.
 4. `ledger_run(..., action="pause", note=...)` preserves state and releases ownership. A later trusted session can acquire an unowned run with its current generation. `complete` closes the investigation; another open can create a new run.
 5. `ledger_export(repository, run_id, format="markdown" | "json", limit, offset, max_chars)` returns report text. Save it using an authorized host file tool if wanted. It does not publish anything.
 
 Every write needs a scoped retry key. An identical retry returns its original operation receipt without duplicating records; changed content with the same key returns `idempotency_conflict`. Receipts describe the committed operation, not a new authorization or a guarantee of current ownership. Consult `ledger_status` for live state. Exact lesson-use retries additionally recheck revocation; an old receipt never authorizes reuse of a revoked lesson.
+
+Retrieve a status reference through `ledger_status(repository, run_id,
+detail_collection, detail_id, offset, max_chars)`. Collections are `run`,
+`observation`, `assessment`, or `finding`. Omit `detail_id` for the run itself;
+other collections require the ID returned by status. Detail mode rejects `limit`
+and `history_offset`, and `offset` is a character position in the complete
+canonical JSON. Follow `next_offset`, concatenate the `content` fragments, and
+verify the reassembled UTF-8 SHA-256 against `content_sha256`. Require the same
+digest on every page and restart if the underlying record changes. A reference
+or partial page is not the complete evidence. Retrieval remains confined to the
+selected repository and run.
 
 The adapter captures an append-only per-review generation before HTTP work and
 checks it in the writer transaction before replacing another snapshot. A delayed
@@ -328,6 +339,14 @@ bounded lock waits are used. Database contention produces an explicit error;
 retry with the same request key. Network calls and optional artifact staging are
 outside database writer transactions.
 
+The current data schema is version 2. First access upgrades an authorized
+version-1 database atomically by adding query indexes; review records, receipts,
+lessons, and artifacts are preserved. Two processes coordinate the upgrade with
+the same SQLite writer lock. Index creation can take time on a large history;
+stop sessions and retain a verified backup before an intentional upgrade.
+Older code supporting only schema version 1 refuses a version-2 database. Downgrading code does
+not downgrade data, and no automatic schema downgrade is provided.
+
 ### Explicit SQLite journal policy
 
 SQLite 3.35 or newer is required. New and rollback-mode databases use DELETE
@@ -359,9 +378,10 @@ Initial resource choices, not benchmark claims:
 - 10-second GitHub request timeout, at most 3 file pages and 200 files in the Hermes adapter
 - Individual returned patches capped at 4,000 characters; missing, incomplete and cut-off patches are explicit
 - Only five file previews are returned by open; snapshot file metadata remains bounded
+- Snapshot metadata is capped at 60,000 compact JSON characters. A large file list retains a prefix and explicitly records `snapshot_metadata_budget`, incomplete capture, and known omitted files rather than refusing the entire PR
 - Recall up to 5 complete lessons or compact references per result page, default 6,000 serialized characters, configurable 500–20,000; detail pages obey the same configured cap
 - A bounded 200-candidate recall window, stable ordering and continuation/omission indicators
-- Status 1–25 rows per collection; export 1–50 rows per collection with a character cap
+- Status 1–25 rows per collection, with a 24,000-character default response cap and complete detail retrieval; export 1–50 rows per collection with a character cap
 - Optional UTF-8 artifact text at most 64 KiB; generated IDs, confined directories, temporary write and atomic publication
 - No arbitrary filesystem paths accepted by model tools
 

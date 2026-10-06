@@ -2,7 +2,8 @@
 
 Only ``GET /repos/{owner}/{repo}/pulls/{number}`` and its ``/files`` endpoint
 are supported. Repository names must be explicitly authorized. Credentials
-come only from the configured environment variable; no git, CLI, netrc,
+come only from the configured resolver (the named environment variable by
+default); no git, CLI, netrc,
 credential helper, proxy environment, or local checkout is consulted.
 
 API contract: https://docs.github.com/en/rest/pulls/pulls
@@ -91,6 +92,7 @@ class GitHubResponse:
 
 
 Transport = Callable[..., GitHubResponse]
+TokenResolver = Callable[[str], str | None]
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -251,6 +253,8 @@ class GitHubClient:
     responses still receive the same host, identity, status, and size checks.
     ``max_retries`` applies only to idempotent GET transport/server failures;
     authorization, rate limits, malformed data and TLS errors are not retried.
+    ``token_resolver`` lets the host honor its active profile's credential scope.
+    Its result or refusal is authoritative; no environment fallback is attempted.
     """
 
     def __init__(self, *, allowed_repositories: Iterable[str],
@@ -258,6 +262,7 @@ class GitHubClient:
                  max_pages: int = 30, max_files: int = 3000,
                  max_response_bytes: int = _MAX_RESPONSE_BYTES, max_patch_chars: int = 100_000,
                  max_retries: int = 2, transport: Transport | None = None,
+                 token_resolver: TokenResolver | None = None,
                  sleep: Callable[[float], None] = time.sleep) -> None:
         if isinstance(allowed_repositories, (str, bytes)):
             raise GitHubError("invalid_config", "allowed_repositories must be a collection of owner/name entries.")
@@ -271,6 +276,8 @@ class GitHubClient:
             raise GitHubError("invalid_config", "allowed_repositories must be an explicit collection.") from None
         if not isinstance(token_env, str) or not _ENV.fullmatch(token_env):
             raise GitHubError("invalid_config", "token_env must name one environment variable.")
+        if token_resolver is not None and not callable(token_resolver):
+            raise GitHubError("invalid_config", "token_resolver must be callable.")
         if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
                 or not math.isfinite(timeout) or not 0 < timeout <= 30):
             raise GitHubError("invalid_config", "timeout must be greater than zero and at most 30 seconds.")
@@ -283,6 +290,7 @@ class GitHubClient:
         self.max_patch_chars = _bounded_int(max_patch_chars, "max_patch_chars", 100_000)
         self.max_retries = _bounded_int(max_retries, "max_retries", 2, minimum=0)
         self._transport = transport if transport is not None else _default_transport
+        self._token_resolver = token_resolver if token_resolver is not None else os.environ.get
         self._sleep = sleep
 
     def _request(self, path: str, *, token: str, page: int | None = None) -> tuple[Any, dict[str, str]]:
@@ -472,10 +480,11 @@ class GitHubClient:
             raise GitHubError("unauthorized_repository", "Repository is outside the configured allowlist.")
         if isinstance(number, bool) or not isinstance(number, int) or not 1 <= number <= _MAX_NUMBER:
             raise GitHubError("invalid_pull_number", "Pull-request number must be a positive integer.")
-        token = os.environ.get(self.token_env)
-        if not token:
-            raise GitHubError("missing_token", "The configured GitHub token environment variable is empty or unset.")
-        if len(token) > 16_384 or any(ord(char) <= 32 or ord(char) >= 127 for char in token):
+        token = self._token_resolver(self.token_env)
+        if token is None or token == "":
+            raise GitHubError("missing_token", "The configured GitHub credential is empty or unset in its credential scope.")
+        if (not isinstance(token, str) or len(token) > 16_384
+                or any(ord(char) <= 32 or ord(char) >= 127 for char in token)):
             raise GitHubError("invalid_token", "The configured GitHub token is not a valid header credential.")
         path = f"/repos/{full_name}/pulls/{number}"
         first_payload, _ = self._request(path, token=token)
