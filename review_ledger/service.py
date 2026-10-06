@@ -117,11 +117,52 @@ class Ledger:
         result["can_write"] = bool(actor and run["owner_session"] == actor.session_id and run["status"] in ("active", "paused"))
         return result
 
-    def status(self, repository: str, run_id: str, actor: Actor, *, limit=10, offset=0) -> dict:
+    @staticmethod
+    def _run_references(conn, scope: Scope, review_id: str, *, limit: int,
+                        offset: int, exclude_id: str | None = None) -> dict:
+        """Discover bounded snapshot references, never session identities or evidence."""
+        # V1 runs are append-only. Use their SQLite insertion order rather than
+        # wall time (which can move backwards) or random UUID tie-breaks.
+        latest = conn.execute(
+            "SELECT id FROM runs WHERE repository_id=? AND review_id=? ORDER BY rowid DESC LIMIT 1",
+            (scope.repository_id, review_id),
+        ).fetchone()[0]
+        clause = " AND id<>?" if exclude_id else ""
+        args = [scope.repository_id, review_id] + ([exclude_id] if exclude_id else [])
+        count = conn.execute("SELECT COUNT(*) FROM runs WHERE repository_id=? AND review_id=?" + clause, args).fetchone()[0]
+        rows = conn.execute(
+            "SELECT id,head_sha,base_sha,comparison,status,created_at,updated_at FROM runs "
+            "WHERE repository_id=? AND review_id=?" + clause + " ORDER BY rowid DESC LIMIT ? OFFSET ?",
+            [*args, limit + 1, offset],
+        ).fetchall()
+        refs = [{**dict(row), "snapshot_state": "latest_recorded" if row["id"] == latest else "historical"}
+                for row in rows[:limit]]
+        return {"runs": refs, "total_runs": count, "omitted": len(rows) > limit,
+                "next_offset": offset + limit if len(rows) > limit else None,
+                "notice": "Recorded snapshots only; latest_recorded is not a fresh GitHub check. Historical assessments are not inherited."}
+
+    def history(self, repository: str, pull_number: int, *, limit=10, offset=0) -> dict:
+        """Read a same-PR index even when a new session knows no prior run ID."""
         scope = self.scope(repository)
+        integer(pull_number, "pull_number", 1, 2**31 - 1)
         integer(limit, "limit", 1, 25)
         integer(offset, "offset", 0, 1_000_000)
         with self.store.connect() as conn:
+            conn.execute("BEGIN")
+            review = conn.execute("SELECT id FROM reviews WHERE repository_id=? AND number=?",
+                                  (scope.repository_id, pull_number)).fetchone()
+            if review is None:
+                raise LedgerError("scope_not_found", "PR is not present in this repository and profile")
+            result = self._run_references(conn, scope, review["id"], limit=limit, offset=offset)
+            return {"state": "ok", "repository": repository, "pull_number": pull_number, **result}
+
+    def status(self, repository: str, run_id: str, actor: Actor, *, limit=10, offset=0, history_offset=0) -> dict:
+        scope = self.scope(repository)
+        integer(limit, "limit", 1, 25)
+        integer(offset, "offset", 0, 1_000_000)
+        integer(history_offset, "history_offset", 0, 1_000_000)
+        with self.store.connect() as conn:
+            conn.execute("BEGIN")
             run = self.store.run(conn, scope, run_id)
             observations = [dict(r) for r in conn.execute("SELECT * FROM observations WHERE repository_id=? AND run_id=? ORDER BY id LIMIT ? OFFSET ?", (scope.repository_id, run_id, limit + 1, offset))]
             assessments = [dict(r) for r in conn.execute("""SELECT a.*,f.claim FROM assessments a JOIN findings f ON a.finding_id=f.id
@@ -132,9 +173,11 @@ class Ledger:
             for obs in observations[:limit]:
                 if obs["artifact_id"]:
                     obs["artifact"] = self.store.artifact_status(obs["artifact_id"])
-            history_count = conn.execute("SELECT COUNT(*) FROM runs WHERE review_id=? AND id<>?", (run["review_id"], run_id)).fetchone()[0]
+            history = self._run_references(conn, scope, run["review_id"], limit=limit,
+                                           offset=history_offset, exclude_id=run_id)
             return {"state": "ok", "run": self._run_view(run, actor), "observations": observations[:limit],
-                    "assessments": assessments[:limit], "findings": findings[:limit], "historical_runs": history_count,
+                    "assessments": assessments[:limit], "findings": findings[:limit], "historical_runs": history["total_runs"],
+                    "related_runs": history,
                     "omitted": {"observations": len(observations) > limit, "assessments": len(assessments) > limit, "findings": len(findings) > limit},
                     "next_offset": offset + limit if max(len(observations), len(assessments), len(findings)) > limit else None,
                     "provenance_notice": "Agent-reported records are not host-verified evidence."}

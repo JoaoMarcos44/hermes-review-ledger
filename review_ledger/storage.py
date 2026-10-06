@@ -17,6 +17,27 @@ from .models import Actor, IDENTIFIER, LedgerError, Scope, canonical, digest, in
 
 SCHEMA_VERSION = 1
 MAX_ARTIFACT_BYTES = 64 * 1024
+MIN_SQLITE_VERSION = (3, 35, 0)
+DEFAULT_JOURNAL_MODE = "delete"
+# Recognize the documented backports individually, not every release >=3.44.6.
+# https://sqlite.org/wal.html#walreset
+WAL_RESET_FIXED_BACKPORTS = frozenset({(3, 44, 6), (3, 50, 7)})
+
+
+def sqlite_has_wal_reset_fix(version: tuple[int, int, int]) -> bool:
+    return version >= (3, 51, 3) or version in WAL_RESET_FIXED_BACKPORTS
+
+
+def require_wal_runtime() -> None:
+    if not sqlite_has_wal_reset_fix(sqlite3.sqlite_version_info):
+        version = ".".join(map(str, sqlite3.sqlite_version_info))
+        raise LedgerError(
+            "unsupported_sqlite_wal",
+            f"Existing WAL database requires SQLite >=3.51.3 or the documented "
+            f"3.44.6/3.50.7 backports; runtime is {version}. Stop all ledger sessions "
+            "and use a supported runtime to back up the database before any offline "
+            "journal migration. No automatic journal conversion or runtime upgrade is performed.",
+        )
 
 
 def now() -> str:
@@ -49,18 +70,48 @@ class Store:
             raise LedgerError("unsafe_path", "Ledger path escapes its data directory")
         return destination
 
+    def _preflight_journal(self):
+        """Reject legacy WAL before SQLite can recover/checkpoint it on open/close.
+
+        SQLite header bytes 18 and 19 identify WAL even after sidecars disappear.
+        A sidecar is also a conservative refusal signal. This is not a lock:
+        operators must stop older clients before upgrading, and must not change
+        journal modes externally while any ledger session is running.
+        """
+        if sqlite_has_wal_reset_fix(sqlite3.sqlite_version_info):
+            return
+        try:
+            with self.path.open("rb") as stream:
+                header = stream.read(20)
+        except FileNotFoundError:
+            header = b""
+        if (header.startswith(b"SQLite format 3\x00") and 2 in header[18:20]) or any(
+            self.path.with_name(self.path.name + suffix).exists() for suffix in ("-wal", "-shm")
+        ):
+            require_wal_runtime()
+
+    @staticmethod
+    def _journal_mode(conn) -> str:
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0].lower()
+        if mode == "wal":
+            require_wal_runtime()
+        return mode
+
     @contextmanager
     def connect(self):
         self._directory()
         if self.path.is_symlink():
             raise LedgerError("unsafe_path", "Ledger database must not be a symlink")
-        if sqlite3.sqlite_version_info < (3, 35, 0):
+        if sqlite3.sqlite_version_info < MIN_SQLITE_VERSION:
             raise LedgerError("unsupported_sqlite", "SQLite 3.35 or newer is required")
+        self._preflight_journal()
         conn = sqlite3.connect(self.path, timeout=self.busy_timeout_ms / 1000, isolation_level=None)
         conn.row_factory = sqlite3.Row
         try:
             conn.execute("PRAGMA foreign_keys=ON")
             conn.execute(f"PRAGMA busy_timeout={self.busy_timeout_ms}")
+            conn.execute("PRAGMA synchronous=FULL")
+            self._journal_mode(conn)
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             if version > SCHEMA_VERSION:
                 raise LedgerError("schema_too_new", "Database schema is newer than this plugin; no changes made")
@@ -82,8 +133,8 @@ class Store:
                 if version > SCHEMA_VERSION:
                     raise LedgerError("schema_too_new", "Database schema is newer than this plugin")
                 if version == 0:
-                    tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-                    if tables:
+                    objects = conn.execute("SELECT name FROM sqlite_master").fetchall()
+                    if objects:
                         raise LedgerError("unknown_schema", "Unversioned nonempty database is not a ledger")
                     migration = (Path(__file__).parent / "migrations" / "001_initial.sql").read_text(encoding="utf-8")
                     for statement in migration.split(";"):
@@ -94,11 +145,13 @@ class Store:
         stored = conn.execute("SELECT value FROM ledger_meta WHERE key='profile_key'").fetchone()
         if not stored or stored[0] != self.profile_key:
             raise LedgerError("profile_mismatch", "This database belongs to a different resolved profile")
-        # WAL is explicitly selected only after unknown/newer schemas are rejected.
-        mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
-        if mode.lower() != "wal":
-            raise LedgerError("unsupported_journal", "Local WAL mode is required; network-shared databases are unsupported")
-        conn.execute("PRAGMA synchronous=FULL")
+        # New/rollback databases explicitly use DELETE. Preserve legacy WAL only
+        # on known-fixed runtimes, without attempting a concurrent mode migration.
+        # Journal changes remain behind the schema and profile fences above.
+        if self._journal_mode(conn) != "wal":
+            mode = conn.execute(f"PRAGMA journal_mode={DEFAULT_JOURNAL_MODE}").fetchone()[0]
+            if mode.lower() != DEFAULT_JOURNAL_MODE:
+                raise LedgerError("unsupported_journal", "Rollback DELETE journal mode is required for this database")
 
     def begin(self, conn):
         for attempt in range(3):
@@ -226,6 +279,12 @@ class Store:
                     if time.monotonic() > deadline:
                         raise LedgerError("backup_timeout", "SQLite backup copy exceeded its ten-second budget; no backup was published")
                 source.backup(destination, pages=128, sleep=0.01, progress=progress)
+                # The backup API copies WAL header flags. This private copy has
+                # no other connections, so publish a standalone rollback file;
+                # never change the source database's journal mode here.
+                mode = destination.execute(f"PRAGMA journal_mode={DEFAULT_JOURNAL_MODE}").fetchone()[0]
+                if mode.lower() != DEFAULT_JOURNAL_MODE:
+                    raise LedgerError("backup_invalid", "Backup could not use rollback DELETE journal mode")
             # Restore the produced bytes to an independent temporary location and verify.
             with tempfile.TemporaryDirectory(prefix="ledger-restore-") as restore_dir:
                 restored = Path(restore_dir) / "restored.sqlite3"
@@ -235,6 +294,8 @@ class Store:
                         raise LedgerError("backup_invalid", "Restored backup failed consistency checks")
                     if check.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
                         raise LedgerError("backup_invalid", "Restored backup has the wrong schema")
+                    if check.execute("PRAGMA journal_mode").fetchone()[0].lower() != DEFAULT_JOURNAL_MODE:
+                        raise LedgerError("backup_invalid", "Restored backup has the wrong journal mode")
             final = directory / f"{ident}.sqlite3"
             os.replace(temporary, final)
             return {"state": "backed_up", "path": str(final), "restore_verified": True,

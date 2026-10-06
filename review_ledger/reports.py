@@ -79,8 +79,9 @@ def markdown(data: dict) -> str:
     run = data["run"]
     lines = ["# Review Ledger report", "", f"Repository: {_literal(data['scope']['repository_name'])}",
              f"Run: {run['id']} ({run['status']})", f"HEAD: {run['head_sha']}", f"Base: {run['base_sha']}",
-             f"Comparison: {run['comparison']}", f"Skill: {run['skill_version']} / {run['skill_hash']}", "",
-             "## Supported current assessments"]
+             f"Comparison: {run['comparison']}", f"Skill: {run['skill_version']} / {run['skill_hash']}"]
+    lines.extend(_snapshot_lines(data.get("snapshot") or {}))
+    lines.extend(["", "## Supported current assessments"])
     current = [a for a in data["assessments"] if a["state"] == "supported" and a["freshness"] == "current"]
     lines.extend(_assessment_lines(current) or ["None recorded on this page. Zero supported findings is a valid result."])
     lines.extend(["", "## Hypotheses and other current assessments"])
@@ -105,6 +106,28 @@ def markdown(data: dict) -> str:
     if any(data["omitted"].values()):
         lines.append(f"- More records omitted. Request next offset {data['next_offset']}.")
     return "\n".join(lines) + "\n"
+
+
+def _snapshot_lines(snapshot: dict) -> list[str]:
+    lines = ["", "## Captured-material completeness (initial snapshot)",
+             "These facts describe the initial capture. Later agent-reported observations do not replace them.",
+             "Complete file enumeration or captured patches do not establish review coverage or correctness."]
+    for key, label in (("files_complete", "Files complete"), ("patches_complete", "Patches complete")):
+        value = snapshot.get(key)
+        rendered = str(value).lower() if isinstance(value, bool) else "unknown"
+        lines.append(f"- {label}: {_literal(rendered)}")
+    for key, label in (("total_files", "Total files"), ("omitted_files", "Omitted files")):
+        value = snapshot.get(key)
+        rendered = str(value) if type(value) is int and value >= 0 else "unknown"
+        lines.append(f"- {label}: {_literal(rendered)}")
+    reasons = snapshot.get("truncation_reasons")
+    if isinstance(reasons, list):
+        lines.append("- Truncation reasons:" if reasons else "- Truncation reasons: none recorded")
+        lines.extend(f"  - {_literal(str(reason))}" for reason in reasons)
+    else:
+        lines.append("- Truncation reasons: unknown")
+    lines.append("Missing capture facts remain unknown; no truncation reasons recorded does not imply completeness.")
+    return lines
 
 
 def _assessment_lines(rows):

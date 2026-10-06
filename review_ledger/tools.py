@@ -51,10 +51,19 @@ def handle(ctx, name: str, arguments: dict, **kwargs) -> str:
         if name == "ledger_open":
             result = _open_review(ctx, ledger, repository, actor, args)
         elif name == "ledger_status":
-            result = ledger.status(
-                repository, args["run_id"], actor,
-                limit=args.get("limit", 10), offset=args.get("offset", 0),
-            )
+            if ("run_id" in args) == ("pull_number" in args):
+                raise LedgerError("invalid_input", "Select exactly one run_id or pull_number for status")
+            if "pull_number" in args:
+                if "history_offset" in args:
+                    raise LedgerError("invalid_input", "PR history uses offset, not history_offset")
+                result = ledger.history(repository, args["pull_number"],
+                                        limit=args.get("limit", 10), offset=args.get("offset", 0))
+            else:
+                result = ledger.status(
+                    repository, args["run_id"], actor,
+                    limit=args.get("limit", 10), offset=args.get("offset", 0),
+                    history_offset=args.get("history_offset", 0),
+                )
         elif name == "ledger_run":
             result = ledger.run_action(
                 repository, args["run_id"], actor, args["generation"],
@@ -66,13 +75,22 @@ def handle(ctx, name: str, arguments: dict, **kwargs) -> str:
                 args["action"], args["data"], args["request_key"],
             )
         elif name == "ledger_recall":
-            budget = min(args.get("context_budget", ledger.config["context_budget"]), ledger.config["context_budget"])
-            result = Learning(ledger.store).recall(
-                ledger.scope(repository), args["run_id"],
-                terms=args.get("terms"), tags=args.get("tags"), symbols=args.get("symbols"),
-                limit=args.get("limit", 5), offset=args.get("offset", 0),
-                context_budget=budget,
-            )
+            requested_budget = integer(args.get("context_budget", ledger.config["context_budget"]),
+                                       "context_budget", 500, 20000)
+            budget = min(requested_budget, ledger.config["context_budget"])
+            learning, scope = Learning(ledger.store), ledger.scope(repository)
+            if "version_id" in args:
+                if any(key in args for key in ("terms", "tags", "symbols", "limit", "result_offset")):
+                    raise LedgerError("invalid_input", "Detail retrieval cannot also specify search or result-window fields")
+                result = learning.detail(scope, args["run_id"], args["version_id"],
+                                         offset=args.get("offset", 0), context_budget=budget)
+            else:
+                result = learning.recall(
+                    scope, args["run_id"],
+                    terms=args.get("terms"), tags=args.get("tags"), symbols=args.get("symbols"),
+                    limit=args.get("limit", 5), offset=args.get("offset", 0),
+                    result_offset=args.get("result_offset", 0), context_budget=budget,
+                )
         elif name == "ledger_lesson":
             result = _record_lesson(ledger, repository, actor, args)
         else:
@@ -157,13 +175,15 @@ def schema(name, description, properties, required):
 SCHEMAS = {
     "ledger_open": schema("ledger_open", "Read the current authorized GitHub PR snapshot and atomically open or accompany its investigation. No code execution.",
                           {"repository": BASE["repository"], "pull_number": I, "request_key": WRITE["request_key"]}, ["repository", "pull_number", "request_key"]),
-    "ledger_status": schema("ledger_status", "Read bounded investigation state and evidence; no session takeover.", {**BASE, "limit": I, "offset": I}, ["repository", "run_id"]),
+    "ledger_status": schema("ledger_status", "Read bounded run evidence and related snapshot references by run_id, or discover runs by pull_number. Select exactly one. No session takeover.",
+                            {**BASE, "pull_number": I, "limit": I, "offset": I, "history_offset": I}, ["repository"]),
     "ledger_run": schema("ledger_run", "Acquire an unowned run or release, pause, complete the current owned generation. Never transfer another session's ownership.",
                          {**WRITE, "action": {"type": "string", "enum": ["acquire", "release", "pause", "complete"]}, "note": S}, [*WRITE, "action"]),
     "ledger_record": schema("ledger_record", "Record agent-reported evidence, propose a finding, assess it for this snapshot, or invalidate an owned-run observation. Read the skill for action-specific data fields.",
                             {**WRITE, "action": {"type": "string", "enum": ["observation", "finding", "assessment", "invalidate_observation"]}, "data": {"type": "object"}}, [*WRITE, "action", "data"]),
-    "ledger_recall": schema("ledger_recall", "Read up to five eligible same-repository lesson versions with conditions and sources. Similarity is not proof.",
-                            {**BASE, "terms": {"type": "array", "items": S}, "tags": {"type": "array", "items": S}, "symbols": {"type": "array", "items": S}, "limit": I, "context_budget": I, "offset": I}, ["repository", "run_id"]),
+    "ledger_recall": schema("ledger_recall", "Read eligible same-repository lessons or budgeted references. With version_id, retrieve complete lesson JSON in bounded pages; reassemble before use. Search uses result_offset within its candidate window; detail uses offset as a character position. Similarity is not proof.",
+                            {**BASE, "terms": {"type": "array", "items": S}, "tags": {"type": "array", "items": S}, "symbols": {"type": "array", "items": S}, "version_id": S,
+                             "limit": I, "context_budget": I, "offset": I, "result_offset": I}, ["repository", "run_id"]),
     "ledger_lesson": schema("ledger_lesson", "Propose or revise candidate lessons; record exact-version use and separate applicability, usefulness, behavior, and blocking. Cannot approve lessons.",
                             {**WRITE, "action": {"type": "string", "enum": ["propose", "revise", "use", "result"]}, "data": {"type": "object"}}, [*WRITE, "action", "data"]),
     "ledger_export": schema("ledger_export", "Generate a bounded Markdown/JSON snapshot; checks lesson revocations and missing artifacts. Does not publish or import.",
