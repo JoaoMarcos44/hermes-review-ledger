@@ -84,7 +84,10 @@ class FakeTransport:
 
 class GitHubClientTests(unittest.TestCase):
     def setUp(self):
-        self.environment = patch.dict(os.environ, {"REVIEW_LEDGER_GITHUB_TOKEN": TOKEN}, clear=True)
+        # Windows native libraries require OS locations even in credential-free tests.
+        environment = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR") if key in os.environ}
+        environment["REVIEW_LEDGER_GITHUB_TOKEN"] = TOKEN
+        self.environment = patch.dict(os.environ, environment, clear=True)
         self.environment.start()
         self.addCleanup(self.environment.stop)
 
