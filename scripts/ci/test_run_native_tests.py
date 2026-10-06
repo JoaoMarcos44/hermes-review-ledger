@@ -1,4 +1,5 @@
 """Unit checks for reporting gates; these do not claim any platform coverage."""
+import ast
 from pathlib import Path
 import tempfile
 import unittest
@@ -8,6 +9,14 @@ from run_native_tests import REQUIRED_INTEGRATION_TESTS, summarize_junit
 
 
 class JUnitGateTests(unittest.TestCase):
+    def test_required_contract_matches_real_integration_test_source(self):
+        source = Path(__file__).resolve().parents[2] / "tests" / "test_hermes_integration.py"
+        module = ast.parse(source.read_text(encoding="utf-8"))
+        actual = {node.name for node in module.body
+                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                  and node.name.startswith("test_")}
+        self.assertEqual(REQUIRED_INTEGRATION_TESTS, actual)
+
     def report(self, *, omitted=None, outcome=None, core=True):
         root = ET.Element("testsuites")
         suite = ET.SubElement(root, "testsuite")
