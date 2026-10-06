@@ -2,10 +2,16 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 
 from .models import (Actor, ELIGIBLE_OUTCOMES, LedgerError, Scope, canonical, choice,
-                     fields, integer, strings, text)
+                     digest, fields, integer, strings, text)
 from .storage import Store, new_id, now
+
+
+def normalize_search(value: str) -> str:
+    """Same Unicode normalization for SQL filtering and Python ranking."""
+    return unicodedata.normalize("NFC", unicodedata.normalize("NFC", value).casefold())
 
 
 class Learning:
@@ -107,22 +113,25 @@ class Learning:
 
     def recall(self, scope: Scope, run_id: str, *, terms: list[str] | None = None,
                tags: list[str] | None = None, symbols: list[str] | None = None,
-               limit: int = 5, context_budget: int = 6000, offset: int = 0) -> dict:
+               limit: int = 5, context_budget: int = 6000, offset: int = 0,
+               result_offset: int = 0) -> dict:
         terms = strings(terms or [], "terms", 20, 80)
         tags = strings(tags or [], "tags", 20, 80)
         symbols = strings(symbols or [], "symbols", 20, 200)
         integer(limit, "limit", 1, 5)
         integer(context_budget, "context_budget", 500, 20000)
         integer(offset, "offset", 0, 1_000_000)
+        integer(result_offset, "result_offset", 0, 200)
         with self.store.connect() as conn:
+            conn.create_function("ledger_casefold", 1, normalize_search, deterministic=True)
             conn.execute("BEGIN")
             self.store.run(conn, scope, run_id)
             # SQL scope/state/text filtering and a bounded candidate window; no FTS dependency.
             clauses, args = [], [scope.repository_id]
             for term in terms + tags + symbols:
                 # Parameter binding plus LIKE escaping keeps user text literal.
-                term = term.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                clauses.append("lower(question || conditions_json || exclusions_json || tags_json || symbols_json || verification) LIKE ? ESCAPE '\\'")
+                term = normalize_search(term).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                clauses.append("ledger_casefold(question || conditions_json || exclusions_json || tags_json || symbols_json || verification) LIKE ? ESCAPE '\\'")
                 args.append("%" + term + "%")
             filter_sql = " AND (" + " OR ".join(clauses) + ")" if clauses else ""
             args.extend([201, offset])
@@ -132,27 +141,76 @@ class Learning:
                 if not self.eligible(conn, scope, row[0]):
                     continue
                 item = self.version(conn, scope, row[0])
-                haystack = canonical(item).casefold()
-                score = sum(1 for t in terms if t.casefold() in haystack) + 2 * len(set(tags) & set(item["tags"])) + 3 * len(set(symbols) & set(item["symbols"]))
+                haystack = normalize_search(canonical(item))
+                score = (sum(1 for t in terms if normalize_search(t) in haystack)
+                         + 2 * len({normalize_search(t) for t in tags} & {normalize_search(t) for t in item["tags"]})
+                         + 3 * len({normalize_search(t) for t in symbols} & {normalize_search(t) for t in item["symbols"]}))
                 candidates.append((score, item))
             candidates.sort(key=lambda pair: (-pair[0], pair[1]["lesson_id"], pair[1]["version"], pair[1]["id"]))
-            selected, used, omitted_budget = [], 0, 0
-            for _, item in candidates:
-                if len(selected) >= limit:
+            selected, references, used, cursor = [], [], 0, result_offset
+            for _, item in candidates[result_offset:]:
+                if len(selected) + len(references) >= limit:
                     break
                 size = len(canonical(item))
-                if used + size > context_budget:
-                    omitted_budget += 1
-                    continue
-                selected.append(item)
-                used += size
-            result = {"state": "ok", "lessons": selected, "context_chars": used, "context_budget": context_budget,
-                    "omitted": {"candidate_window": len(rows) > 200, "budget": omitted_budget,
-                                "result_limit": len(candidates) > len(selected) + omitted_budget},
+                if used + size <= context_budget:
+                    selected.append(item)
+                    used += size
+                else:
+                    reference = {"version_id": item["id"], "required_context_chars": size}
+                    reference_size = len(canonical(reference))
+                    if used + reference_size > context_budget:
+                        break
+                    references.append(reference)
+                    used += reference_size
+                cursor += 1
+            more_results = cursor < len(candidates)
+            result = {"state": "ok", "lessons": selected, "lesson_references": references,
+                    "context_chars": used, "context_budget": context_budget,
+                    "omitted": {"candidate_window": len(rows) > 200, "budget": len(references),
+                                "result_limit": more_results},
+                    "next_result_offset": cursor if more_results else None,
                     "next_offset": offset + 200 if len(rows) > 200 else None,
-                    "notice": "Conditions guide investigation; similarity does not prove a defect. Recheck eligibility before use."}
+                    "notice": "Conditions guide investigation; similarity does not prove a defect. "
+                              "References omit no fields from storage: retrieve all detail pages by version_id before use. "
+                              "Page next_result_offset within this candidate window before advancing next_offset. "
+                              "Recheck eligibility before use."}
             conn.commit()
             return result
+
+    def detail(self, scope: Scope, run_id: str, version_id: str, *,
+               context_budget: int = 6000, offset: int = 0) -> dict:
+        """Page exact, complete lesson JSON without dropping conditions or exclusions."""
+        text(version_id, "version_id", 64)
+        integer(context_budget, "context_budget", 500, 20000)
+        integer(offset, "offset", 0, 1_000_000)
+        with self.store.connect() as conn:
+            conn.execute("BEGIN")
+            self.store.run(conn, scope, run_id)
+            item = self.version(conn, scope, version_id)
+            if not item["eligible_now"]:
+                raise LedgerError("lesson_not_eligible", "This version is no longer eligible; do not use previous detail pages")
+            content = canonical(item)
+            if offset >= len(content):
+                raise LedgerError("invalid_input", "Detail offset must refer to a character within the complete lesson JSON")
+            # The JSON string's escaped size, not only its raw text, is budgeted.
+            low, high = 0, min(len(content) - offset, context_budget)
+            while low < high:
+                length = (low + high + 1) // 2
+                if len(canonical(content[offset:offset + length])) <= context_budget:
+                    low = length
+                else:
+                    high = length - 1
+            chunk = content[offset:offset + low]
+            end = offset + low
+            return {"state": "detail", "version_id": version_id, "eligible_now": True,
+                    "content_format": "canonical_json", "content": chunk,
+                    "content_sha256": digest(item), "total_chars": len(content), "offset": offset,
+                    "next_offset": end if end < len(content) else None,
+                    "complete": offset == 0 and end == len(content),
+                    "context_chars": len(canonical(chunk)), "context_budget": context_budget,
+                    "notice": "Partial pages are not an applicable strategy. Reassemble all pages with the same "
+                              "content_sha256 and verify it before interpreting conditions, exclusions or sources. "
+                              "Restart if the digest changes; eligibility is checked again for every page and use."}
 
     def use(self, scope: Scope, run_id: str, actor: Actor, generation: int,
             version_id: str, applicability: str, explanation: str, request_key: str):

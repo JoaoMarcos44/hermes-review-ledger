@@ -136,7 +136,7 @@ def model_dispatch(name, args, session_id):
     return json.loads(handle_function_call(
         name, args, task_id="terminal-runtime-id", session_id=session_id))
 
-def offline_github(loaded):
+def offline_github(loaded, head_sha="a" * 40):
     # Only the external HTTP transport is synthetic. Hermes discovery,
     # profile/config resolution, dispatcher, plugin handlers, and storage are real.
     github = importlib.import_module(loaded.module.__name__ + ".review_ledger.github")
@@ -144,7 +144,7 @@ def offline_github(loaded):
         "number": 42, "title": "Synthetic integration fixture",
         "url": "https://api.github.com/repos/Example/project/pulls/42",
         "html_url": "https://github.com/Example/project/pull/42",
-        "changed_files": 1, "head": {{"sha": "a" * 40}},
+        "changed_files": 1, "head": {{"sha": head_sha}},
         "base": {{"sha": "b" * 40, "repo": {{
             "id": 123456, "node_id": "R_fixture123456", "name": "project",
             "full_name": "Example/project", "owner": {{"login": "Example"}},
@@ -413,4 +413,94 @@ lessons = model_dispatch("ledger_recall", query, "session-b")["lessons"]
 assert len(lessons) == 1 and lessons[0]["id"] == proposal["version_id"], lessons
 assert operator("suspend", "operator-suspend")["state"] == "suspended"
 assert model_dispatch("ledger_recall", query, "session-b")["lessons"] == []
+""")
+
+
+def test_real_tools_discover_historical_runs_without_cached_ids(hermes_source, tmp_path):
+    _runtime(hermes_source, tmp_path, """
+install_fixture(HOME)
+manager, loaded = load_fixture()
+old = open_fixture(loaded)
+offline_github(loaded, head_sha="d" * 40)
+new = model_dispatch("ledger_open", {
+    "repository": "Example/project", "pull_number": 42, "request_key": "new-snapshot",
+}, "session-a")["run"]
+index = model_dispatch("ledger_status", {
+    "repository": "Example/project", "pull_number": 42, "limit": 1,
+}, "new-session-with-no-run-ids")
+assert index["runs"][0]["id"] == new["id"] and index["next_offset"] == 1, index
+second = model_dispatch("ledger_status", {
+    "repository": "Example/project", "pull_number": 42, "limit": 1, "offset": index["next_offset"],
+}, "new-session-with-no-run-ids")
+ref = second["runs"][0]
+assert ref["id"] == old["id"] and ref["snapshot_state"] == "historical", second
+assert "owner_session" not in ref and "generation" not in ref, ref
+historical = model_dispatch("ledger_status", {
+    "repository": "Example/project", "run_id": ref["id"],
+}, "new-session-with-no-run-ids")
+assert historical["run"]["status"] == "superseded" and not historical["run"]["can_write"], historical
+for selection in ({}, {"run_id": new["id"], "pull_number": 42}):
+    invalid = model_dispatch("ledger_status", {"repository": "Example/project", **selection}, "session-a")
+    assert invalid["error"]["code"] == "invalid_input", invalid
+""")
+
+
+def test_real_tool_unicode_budget_reference_and_complete_detail(hermes_source, tmp_path):
+    _runtime(hermes_source, tmp_path, """
+import hashlib
+install_fixture(HOME)
+manager, loaded = load_fixture()
+run = open_fixture(loaded)
+base = {"repository": "Example/project", "run_id": run["id"], "generation": run["generation"]}
+record = model_dispatch("ledger_record", {
+    **base, "action": "observation", "request_key": "large-source", "data": {
+        "kind": "inspection", "outcome": "inspection", "summary": "Synthetic detail source",
+        "limitations": "Only a local fixture"}}, "session-a")
+conditions = [f"Condition {i}: " + "Í" * 470 for i in range(10)]
+exclusions = [f"Exclusion {i}: " + "x" * 470 for i in range(10)]
+proposal = model_dispatch("ledger_lesson", {
+    **base, "action": "propose", "request_key": "large-proposal", "data": {
+        "question": "ÍNDICE needs complete retrieval?", "conditions": conditions, "exclusions": exclusions,
+        "verification": "Read complete conditions and exclusions", "tags": ["AÇÃO"],
+        "sources": [{"observation_id": record["observation_id"], "relation": "supports"}]}}, "session-a")
+assert proposal["state"] == "candidate", proposal
+from hermes_cli.main import _attach_plugin_cli_command
+parser = argparse.ArgumentParser(prog="hermes")
+subs = parser.add_subparsers(dest="command", required=True)
+for entry in manager._cli_commands.values():
+    _attach_plugin_cli_command(subs, entry)
+def operator(action, key):
+    args = parser.parse_args(["review-ledger", action, "Example/project", proposal["version_id"],
+        "--reason", "Explicit synthetic operator evaluation", "--request-key", key])
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        assert args.func(args) == 0
+    return json.loads(output.getvalue())
+assert operator("approve", "approve-large")["state"] == "active"
+query = {"repository": "Example/project", "run_id": run["id"], "context_budget": 20000}
+recall = model_dispatch("ledger_recall", {**query, "terms": ["índice"]}, "session-b")
+assert recall["context_budget"] == 6000 and recall["lessons"] == [], recall
+ref = recall["lesson_references"][0]
+assert ref["version_id"] == proposal["version_id"] and ref["required_context_chars"] > 6000, recall
+chunks, offset, checksum = [], 0, None
+while True:
+    page = model_dispatch("ledger_recall", {**query, "version_id": ref["version_id"], "offset": offset}, "session-b")
+    assert page["state"] == "detail" and page["context_budget"] == 6000, page
+    assert page["context_chars"] <= 6000 and page["eligible_now"], page
+    assert checksum in (None, page["content_sha256"]), page
+    checksum = page["content_sha256"]
+    chunks.append(page["content"])
+    offset = page["next_offset"]
+    if offset is None:
+        break
+content = "".join(chunks)
+assert hashlib.sha256(content.encode()).hexdigest() == checksum
+lesson = json.loads(content)
+assert lesson["conditions"] == sorted(conditions) and lesson["exclusions"] == sorted(exclusions), lesson
+use = model_dispatch("ledger_lesson", {**base, "action": "use", "request_key": "exact-use", "data": {
+    "version_id": lesson["id"], "applicability": "uncertain", "explanation": "All pages read; synthetic only"}}, "session-a")
+assert use["version_id"] == proposal["version_id"], use
+assert operator("suspend", "suspend-large")["state"] == "suspended"
+revoked = model_dispatch("ledger_recall", {**query, "version_id": ref["version_id"]}, "session-b")
+assert revoked["error"]["code"] == "lesson_not_eligible", revoked
 """)

@@ -8,7 +8,8 @@ Hermes investigates code using its authorized host tools. Review Ledger records 
 
 The implementation was tested against the public NousResearch/hermes-agent source at commit `0dbaf33f67acf1f6d8e8e6c6efe8042ef8db98c4`, runtime identity `git.0dbaf33`. Its `pyproject.toml` uses the placeholder version `0.0.0`; this project does not invent a minimum Hermes release number.
 
-- Linux, Python 3.14.7, pytest 8.4.2, SQLite 3.53.1 in WAL mode
+- Earlier native validation included Linux, Python 3.14.7, pytest 8.4.2 and SQLite 3.53.1; each new revision needs its own exact-commit run
+- New databases now use rollback DELETE journaling; existing WAL databases require a known-fixed SQLite runtime as described below
 - Real Hermes PluginManager, registry/model dispatcher, CLI registration, Plugin Doctor and skill loading exercised in temporary profiles
 - Native runtime tests use Hermes' `in_process` plugin mode. In `plugins.isolation: host`, upstream skips CLI registration; the complete operator workflow in that mode is not supported or claimed by this V1.
 - Core code also targets Python 3.12–3.14; the current Hermes checkout itself requires Python 3.14
@@ -212,7 +213,7 @@ the host's conversation and authorization controls.
 All model-facing operations return JSON with an explicit `state`; failures return `state: error` with a stable `error.code`. Unknown fields are rejected. The host provides profile and session identity separately from model arguments.
 
 1. `ledger_open(repository, pull_number, request_key)` reads GitHub metadata/files, brackets pagination with matching full HEAD/base metadata, and atomically reuses or creates a run. It returns ownership, snapshot, completeness warnings, initial eligible lessons, and a small file preview.
-2. `ledger_status(repository, run_id, limit, offset)` reads bounded state. A second session can follow the run but cannot write over its owner.
+2. `ledger_status(repository, run_id, limit, offset, history_offset)` reads bounded state and a separately paginated `related_runs` index. A second session can follow the run but cannot write over its owner. Alternatively, `ledger_status(repository, pull_number, limit, offset)` discovers this PR's runs without knowing any stored IDs. Supply exactly one of `run_id` or `pull_number`. The append-only run index uses SQLite insertion order, so clock changes do not change which run was recorded last. References expose revisions/status, not owner sessions or evidence; `latest_recorded` means the latest local record, not a fresh GitHub check.
 3. `ledger_record(repository, run_id, generation, request_key, action, data)` records an observation, proposes a finding, records a snapshot-scoped assessment, or invalidates an owned observation.
 4. `ledger_run(..., action="pause", note=...)` preserves state and releases ownership. A later trusted session can acquire an unowned run with its current generation. `complete` closes the investigation; another open can create a new run.
 5. `ledger_export(repository, run_id, format="markdown" | "json", limit, offset, max_chars)` returns report text. Save it using an authorized host file tool if wanted. It does not publish anything.
@@ -260,10 +261,34 @@ Learning remains within one repository and one resolved profile.
 
 1. The agent proposes a conditional question with application conditions, exclusions, suggested investigation, tags/symbols and eligible observation sources. This is a `candidate`.
 2. A local operator inspects and explicitly approves that exact version.
-3. `ledger_recall` returns up to five eligible active versions. Selection is deterministic, bounded, and based on terms, tags and symbols. No embeddings, probabilities or model calls are used.
+3. `ledger_recall` returns up to five eligible active versions or compact `lesson_references` with `version_id` and `required_context_chars`. Selection is deterministic, bounded, and based on terms, tags and symbols. SQL filtering and ranking both use Unicode NFC/casefold without changing stored text. No embeddings, probabilities or model calls are used.
 4. Before applying one, `ledger_lesson(action="use")` records its exact version, applicability and explanation and rechecks eligibility.
 5. `ledger_lesson(action="result")` records usefulness, behavioral result, execution blocking and a separate explanation. Refutation can be useful. Blocked execution is inconclusive. Unused lessons receive no invented outcome.
 6. The operator can suspend or restrict a version. A revision creates a new candidate, preserving all prior versions and exact-version uses. Approving a newer version retires the old one without rewriting ongoing history.
+
+### Retrieval within a fixed context budget
+
+The configured `context_budget` caps every tool request even if the caller asks
+for more. It covers serialized lesson/reference content; the bounded response
+metadata is additional. A large lesson is represented by an ID and required
+size rather than silently losing conditions or exclusions. Follow
+`next_result_offset` with the same search and candidate-window `offset` until it
+is null; only then advance `next_offset` to the next 200-candidate window.
+Ranking is deterministic within each window. These are live pagination cursors,
+not a frozen search snapshot; restart the search if operator changes occur.
+
+Retrieve a reference through the same tool:
+`ledger_recall(repository, run_id, version_id, offset=0, context_budget=...)`.
+Do not include search fields or `limit` in detail mode. Here `offset` is a
+character position in the complete canonical JSON. Each returned `content`
+fragment respects the budget after JSON string escaping; follow `next_offset`
+until null. Concatenate all fragments, require the same `content_sha256` on all
+pages, and verify the SHA-256 of the reassembled UTF-8 content before reading its
+conditions, exclusions and sources. A partial fragment is not a usable strategy.
+Restart if its digest changes. Every page and subsequent exact-version use
+rechecks eligibility; revocation/source invalidation is an explicit error.
+The local operator's existing `inspect` command remains available for full
+inspection, including inactive history.
 
 Local operator examples (replace IDs with actual tool responses):
 
@@ -296,14 +321,45 @@ The official store is:
 
 The integration resolves the public `ctx.state.data_dir` on each invocation. It never hard-codes `~/.hermes`, writes into installed code, or shares a cached connection across profiles. The data store is bound to its resolved profile identity.
 
-SQLite initialization and schema migration are coordinated between processes. Unknown newer schemas are rejected before journal/schema changes. Foreign keys, parameterized SQL, short transactions, WAL and bounded lock waits are used. Database contention produces an explicit error; retry with the same request key. Network calls and optional artifact staging are outside database writer transactions.
+SQLite initialization and schema migration are coordinated between processes.
+Unknown/newer schemas and profile mismatches are rejected before journal changes.
+Foreign keys, parameterized SQL, FULL synchronization, short transactions and
+bounded lock waits are used. Database contention produces an explicit error;
+retry with the same request key. Network calls and optional artifact staging are
+outside database writer transactions.
+
+### Explicit SQLite journal policy
+
+SQLite 3.35 or newer is required. New and rollback-mode databases use DELETE
+journaling. Readers can block a writer's commit in rollback mode, so contention
+can be more visible than under WAL; it remains bounded and retryable. Local,
+same-machine filesystems are required; network-shared databases are unsupported.
+
+Existing WAL databases stay in WAL only with SQLite >=3.51.3 or the explicitly
+recognized upstream backports 3.44.6 and 3.50.7. This is a check of Python's linked
+SQLite runtime, not the Python version or a separately installed sqlite command.
+The [official WAL-reset advisory](https://sqlite.org/wal.html#walreset) identifies
+these fixes. A blanket >=3.44.6 comparison would wrongly accept other affected
+release lines. Unverified vendor backports and other older release numbers fail
+closed; no vulnerability/corruption reproduction is used as a safety test.
+
+On an unrecognized runtime, WAL header flags or -wal/-shm sidecars cause an
+`unsupported_sqlite_wal` refusal before SQLite opens the database. Even stale
+sidecars require operator review; a refusal is not evidence of corruption.
+There is no automatic source-journal conversion or Python/SQLite upgrade.
+Stop all ledger sessions, including older plugin clients, before upgrading.
+Do not change journal mode externally while sessions run. To recover a refused
+legacy WAL installation, use a known-fixed runtime to create and verify a backup
+before any operator-managed offline migration. Keep the original database and
+its sidecars together; do not delete sidecars to bypass the check. The plugin
+does not provide an automatic restore/migration command.
 
 Initial resource choices, not benchmark claims:
 
 - 10-second GitHub request timeout, at most 3 file pages and 200 files in the Hermes adapter
 - Individual returned patches capped at 4,000 characters; missing, incomplete and cut-off patches are explicit
 - Only five file previews are returned by open; snapshot file metadata remains bounded
-- Recall up to 5 lessons, default 6,000 serialized characters, configurable 500–20,000
+- Recall up to 5 complete lessons or compact references per result page, default 6,000 serialized characters, configurable 500–20,000; detail pages obey the same configured cap
 - A bounded 200-candidate recall window, stable ordering and continuation/omission indicators
 - Status 1–25 rows per collection; export 1–50 rows per collection with a character cap
 - Optional UTF-8 artifact text at most 64 KiB; generated IDs, confined directories, temporary write and atomic publication
@@ -311,7 +367,7 @@ Initial resource choices, not benchmark claims:
 
 The GitHub client performs only fixed-host HTTPS GETs. Redirects, unauthorized repositories and untrusted pagination targets are rejected. No credentials are sent to links extracted from PR content. A transport/auth/rate-limit failure remains an error, never an empty clean review. GitHub has no atomic multi-endpoint snapshot API: final HEAD/base revalidation cannot rule out an undetected ABA ref change.
 
-JSON exports include `export_format_version: 1`, scope, snapshot and references, preserving reported strings verbatim. Markdown renders reported free text as literal content by escaping Markdown/HTML structure and indenting continuation lines; this prevents evidence text from creating report sections or image syntax. Renderer-specific extensions are not certified. Markdown separates supported current assessments, hypotheses/other assessments, historical evidence and limits. Missing artifacts and revoked lesson versions are explicit. Exports are bounded snapshots, not synchronization. Import is out of scope.
+JSON exports include `export_format_version: 1`, scope, snapshot and references, preserving reported strings verbatim. Markdown renders reported free text as literal content by escaping Markdown/HTML structure and indenting continuation lines; this prevents evidence text from creating report sections or image syntax. Renderer-specific extensions are not certified. Markdown displays initial capture completeness (`files_complete`, `patches_complete`, `total_files`, `omitted_files`, `truncation_reasons`) explicitly, including unknown older values, separately from later agent observations and export pagination. It separates supported current assessments, hypotheses/other assessments, historical evidence and limits. Missing artifacts and revoked lesson versions are explicit. Exports are bounded snapshots, not synchronization. Import is out of scope.
 
 Create a consistent SQLite backup:
 
@@ -319,7 +375,7 @@ Create a consistent SQLite backup:
 hermes review-ledger backup
 ```
 
-The command uses `sqlite3.Connection.backup`, restores the produced bytes into an independent temporary directory, and checks integrity, foreign keys and schema version before publishing the backup under the plugin's `backups/` directory. Every connection is explicitly closed before temporary-directory cleanup or file publication, including on Windows where open file handles can prevent those operations. Its result includes `restore_verified: true` only after those checks. Backups contain the database; optional artifact files are not bundled. Preserve the artifact directory separately if those attachments matter. No automated restore/import or data-delete operation is provided.
+The command uses `sqlite3.Connection.backup`, explicitly sets the private backup destination to DELETE journaling without changing the source, restores the produced bytes into an independent temporary directory, and checks integrity, foreign keys and schema version before publishing the backup under the plugin's `backups/` directory. Every connection is explicitly closed before temporary-directory cleanup or file publication, including on Windows where open file handles can prevent those operations. Its result includes `restore_verified: true` only after those checks. Backups contain the database; optional artifact files are not bundled. Preserve the artifact directory separately if those attachments matter. No automated restore/import or data-delete operation is provided.
 
 The SQLite backup copy phase has a ten-second progress deadline. Opening the database, copying the restored file, and running integrity checks are outside that deadline; this is not a total wall-clock guarantee. Optional artifact staging is cleaned up after ordinary failed operations or idempotent retries; an abrupt process termination can leave an unreferenced bounded artifact file. There is no background cleanup process.
 
@@ -366,7 +422,7 @@ authorization and an account quota/billing check; paid overages are not authoriz
 
 The source checkout must have its runtime dependencies available to that interpreter. The integration harness uses real host modules in isolated subprocesses, clears credentials, and substitutes only GitHub HTTP responses. When `HERMES_SOURCE_DIR` is absent, the integration tests are visibly skipped and are not proof of host compatibility. An explicitly selected missing/broken source fails instead of being presented as a pass.
 
-The suite covers Unicode/spaced profile paths, real filesystem cleanup, deterministic connection closure, native SQLite writer contention and retry, transaction rollback, persistence/restart, full learning cycle, scoped idempotency, repository/profile isolation, full snapshot identity, real two-process initialization/reuse/acquisition, stale generation rejection, evidence limitations, source invalidation, exact lesson versions, bounded deterministic retrieval without FTS, unknown schemas, backup/restoration, missing/unsafe artifacts, pagination, GitHub errors and native Hermes surfaces.
+The suite covers Unicode/spaced profile paths, real filesystem cleanup, deterministic connection closure, native SQLite writer contention and retry, transaction rollback, persistence/restart, full learning cycle, scoped idempotency, repository/profile isolation, full snapshot identity, real two-process initialization/reuse/acquisition, stale generation rejection, evidence limitations, source invalidation, exact lesson versions, bounded deterministic Unicode retrieval without FTS, complete large-lesson detail pagination, ID-free historical-run discovery, capture-completeness rendering, synthetic journal/runtime policy boundaries, unknown schemas, backup/restoration, missing/unsafe artifacts, pagination, GitHub errors and native Hermes surfaces.
 
 Actual validation results are recorded only after running the final source. Do not infer coverage for an OS without an execution report from its real native runner. Live GitHub authentication, a real user PR pilot, and a full interactive model conversation require separate validation. The plugin does not claim measured improvement in review quality.
 
