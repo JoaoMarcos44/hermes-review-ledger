@@ -219,6 +219,12 @@ def _replace(source: Path, target: Path) -> None:
 
 def _discard(path: Path) -> None:
     if _exists(path):
+        _plain(path, directory=True)
+        # Only reserved old/new management directories reach this helper. A
+        # final rmdir interrupted after marker deletion leaves no file to own.
+        if not _exists(path / MARKER) and not any(path.iterdir()):
+            path.rmdir()
+            return
         # Delete the marker last. If Windows locks a file, a later invocation can
         # validate and finish the partially cleaned, still-owned code directory.
         _owned(path, allow_missing=True)

@@ -213,6 +213,24 @@ def test_metadata_short_write_never_publishes_partial_journal(tmp_path, monkeypa
     assert not path.with_name("pending.json.tmp").exists()
 
 
+def test_final_empty_directory_cleanup_failure_is_retryable(profile, monkeypatch):
+    i.install(profile)
+    changed_payload(monkeypatch)
+    rmdir = Path.rmdir
+    failures = []
+    def fail_once(path, *args, **kwargs):
+        if path == profile / i.STATE_DIR / "old" and not failures:
+            failures.append(path)
+            raise PermissionError("synthetic final directory sharing lock")
+        return rmdir(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "rmdir", fail_once)
+    result = i.install(profile)
+    assert result["state"] == "upgraded" and "warning" in result
+    assert not any((profile / i.STATE_DIR / "old").iterdir())
+    assert i.install(profile)["state"] == "unchanged"
+    assert not (profile / i.STATE_DIR / "old").exists()
+
+
 def test_interrupted_journal_write_can_be_retried(profile):
     i.install(profile)
     before = retained(profile)
