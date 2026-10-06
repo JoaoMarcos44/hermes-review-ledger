@@ -1,0 +1,185 @@
+"""Native Hermes integration: trusted invocation context stays at this edge."""
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+from . import __version__
+from .github import GitHubClient, GitHubError
+from .learning import Learning
+from .models import Actor, LedgerError, fields, integer, strings, text
+from .reports import export
+from .service import Ledger
+from .storage import Store
+
+SKILL_PATH = Path(__file__).resolve().parent.parent / "skills" / "review-ledger" / "SKILL.md"
+
+
+def ledger_for_context(ctx) -> Ledger:
+    """Resolve public, profile-scoped state on every invocation; never cache a connection."""
+    try:
+        data_dir = Path(ctx.state.data_dir)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise LedgerError("unsupported_host_context", "Hermes public ctx.state.data_dir is required") from exc
+    if not data_dir.is_absolute():
+        raise LedgerError("unsupported_host_context", "Hermes data directory must be absolute")
+    profile_key = hashlib.sha256(str(data_dir.resolve()).encode()).hexdigest()
+    allowed = ctx.get_config("authorized_repositories", default=[])
+    allowed = strings(allowed, "configured authorized_repositories", 100, 200)
+    budget = integer(ctx.get_config("context_budget", default=6000), "configured context_budget", 500, 20000)
+    return Ledger(
+        Store(data_dir, profile_key), allowed,
+        skill_version=__version__,
+        skill_hash=hashlib.sha256(SKILL_PATH.read_bytes()).hexdigest(),
+        relevant_config={"context_budget": budget, "comparison": "github_pr"},
+    )
+
+
+def handle(ctx, name: str, arguments: dict, **kwargs) -> str:
+    try:
+        # session_id is supplied separately by Hermes model dispatch; a model field is rejected.
+        session = kwargs.get("session_id")
+        if not isinstance(session, str) or not session.strip():
+            raise LedgerError("trusted_session_required", "A trusted Hermes-injected session_id is required; model/task IDs are not accepted")
+        actor = Actor(session)
+        parameters = SCHEMAS[name]["parameters"]
+        args = fields(arguments, set(parameters["properties"]), set(parameters["required"]))
+        ledger = ledger_for_context(ctx)
+        repository = text(args["repository"], "repository", 200)
+        ledger.authorize(repository)
+        if name == "ledger_open":
+            result = _open_review(ctx, ledger, repository, actor, args)
+        elif name == "ledger_status":
+            result = ledger.status(
+                repository, args["run_id"], actor,
+                limit=args.get("limit", 10), offset=args.get("offset", 0),
+            )
+        elif name == "ledger_run":
+            result = ledger.run_action(
+                repository, args["run_id"], actor, args["generation"],
+                args["action"], args["request_key"], args.get("note", ""),
+            )
+        elif name == "ledger_record":
+            result = ledger.record(
+                repository, args["run_id"], actor, args["generation"],
+                args["action"], args["data"], args["request_key"],
+            )
+        elif name == "ledger_recall":
+            budget = min(args.get("context_budget", ledger.config["context_budget"]), ledger.config["context_budget"])
+            result = Learning(ledger.store).recall(
+                ledger.scope(repository), args["run_id"],
+                terms=args.get("terms"), tags=args.get("tags"), symbols=args.get("symbols"),
+                limit=args.get("limit", 5), offset=args.get("offset", 0),
+                context_budget=budget,
+            )
+        elif name == "ledger_lesson":
+            result = _record_lesson(ledger, repository, actor, args)
+        else:
+            result = export(
+                ledger, repository, args["run_id"], actor, format=args["format"],
+                limit=args.get("limit", 25), offset=args.get("offset", 0),
+                max_chars=args.get("max_chars", 100000),
+            )
+        return json.dumps(result, ensure_ascii=False, allow_nan=False)
+    except (LedgerError, GitHubError) as exc:
+        return json.dumps({"state": "error", "error": {"code": exc.code, "message": str(exc)}})
+    except (TypeError, ValueError, KeyError):
+        return json.dumps({"state": "error", "error": {"code": "invalid_input", "message": "Invalid or missing operation fields"}})
+    except Exception:
+        # No raw exception/HTTP body/configuration in model-visible responses.
+        return json.dumps({"state": "error", "error": {"code": "internal_error", "message": "Ledger operation failed; no clean-review result is available"}})
+
+
+def _open_review(ctx, ledger: Ledger, repository: str, actor: Actor, args: dict) -> dict:
+    request_key = text(args["request_key"], "request_key", 128)
+    owner, separator, name = repository.partition("/")
+    if not separator or not owner or not name or "/" in name:
+        raise LedgerError("invalid_input", "Repository must be owner/name")
+    number = integer(args["pull_number"], "pull_number", 1, 2**31 - 1)
+    client = GitHubClient(
+        allowed_repositories=sorted(ledger.authorized),
+        token_env=ctx.get_config("github_token_env", default="REVIEW_LEDGER_GITHUB_TOKEN"),
+        timeout=10, max_pages=3, max_files=200, max_patch_chars=4000,
+    )
+    generation = ledger.open_generation(repository, number)
+    snapshot = client.fetch_snapshot(owner, name, number).as_dict()
+    result = ledger.open(
+        snapshot, actor, request_key, expected_open_generation=generation,
+    )
+    result["recall"] = Learning(ledger.store).recall(
+        ledger.scope(repository), result["run"]["id"],
+        context_budget=ledger.config["context_budget"],
+    )
+    # Patches are untrusted reference data; host tools perform any inspection.
+    result["files"] = snapshot["files"][:5]
+    result["files_returned"] = len(result["files"])
+    result["files_omitted_from_response"] = max(0, len(snapshot["files"]) - len(result["files"]))
+    result["patch_notice"] = "GitHub patches may be missing or truncated; no code was executed."
+    return result
+
+
+def _record_lesson(ledger: Ledger, repository: str, actor: Actor, args: dict) -> dict:
+    learning = Learning(ledger.store)
+    scope = ledger.scope(repository)
+    data, action = args["data"], args["action"]
+    common = (scope, args["run_id"], actor, args["generation"])
+    request_key = args["request_key"]
+    if action in ("propose", "revise"):
+        if action == "revise" and not data.get("previous_version_id"):
+            raise LedgerError("invalid_input", "A revision requires previous_version_id")
+        return learning.propose(*common, data, request_key)
+    if action == "use":
+        required = {"version_id", "applicability", "explanation"}
+        fields(data, required, required)
+        return learning.use(
+            *common, data["version_id"], data["applicability"], data["explanation"], request_key,
+        )
+    if action == "result":
+        required = {"use_id", "usefulness", "behavioral_result", "execution_block", "explanation"}
+        fields(data, required, required)
+        outcome = {key: value for key, value in data.items() if key != "use_id"}
+        return learning.result(*common, data["use_id"], outcome, request_key)
+    raise LedgerError("invalid_input", "Lesson tools may propose, revise, use or record results; approval is operator-only")
+
+
+S = {"type": "string"}
+I = {"type": "integer"}
+BASE = {"repository": {"type": "string", "description": "Explicitly authorized GitHub owner/name"}, "run_id": S}
+WRITE = {**BASE, "generation": I, "request_key": {"type": "string", "description": "Stable retry key; reuse only with identical content"}}
+
+
+def schema(name, description, properties, required):
+    return {"name": name, "description": description,
+            "parameters": {"type": "object", "properties": properties, "required": required, "additionalProperties": False}}
+
+
+SCHEMAS = {
+    "ledger_open": schema("ledger_open", "Read the current authorized GitHub PR snapshot and atomically open or accompany its investigation. No code execution.",
+                          {"repository": BASE["repository"], "pull_number": I, "request_key": WRITE["request_key"]}, ["repository", "pull_number", "request_key"]),
+    "ledger_status": schema("ledger_status", "Read bounded investigation state and evidence; no session takeover.", {**BASE, "limit": I, "offset": I}, ["repository", "run_id"]),
+    "ledger_run": schema("ledger_run", "Acquire an unowned run or release, pause, complete the current owned generation. Never transfer another session's ownership.",
+                         {**WRITE, "action": {"type": "string", "enum": ["acquire", "release", "pause", "complete"]}, "note": S}, [*WRITE, "action"]),
+    "ledger_record": schema("ledger_record", "Record agent-reported evidence, propose a finding, assess it for this snapshot, or invalidate an owned-run observation. Read the skill for action-specific data fields.",
+                            {**WRITE, "action": {"type": "string", "enum": ["observation", "finding", "assessment", "invalidate_observation"]}, "data": {"type": "object"}}, [*WRITE, "action", "data"]),
+    "ledger_recall": schema("ledger_recall", "Read up to five eligible same-repository lesson versions with conditions and sources. Similarity is not proof.",
+                            {**BASE, "terms": {"type": "array", "items": S}, "tags": {"type": "array", "items": S}, "symbols": {"type": "array", "items": S}, "limit": I, "context_budget": I, "offset": I}, ["repository", "run_id"]),
+    "ledger_lesson": schema("ledger_lesson", "Propose or revise candidate lessons; record exact-version use and separate applicability, usefulness, behavior, and blocking. Cannot approve lessons.",
+                            {**WRITE, "action": {"type": "string", "enum": ["propose", "revise", "use", "result"]}, "data": {"type": "object"}}, [*WRITE, "action", "data"]),
+    "ledger_export": schema("ledger_export", "Generate a bounded Markdown/JSON snapshot; checks lesson revocations and missing artifacts. Does not publish or import.",
+                            {**BASE, "format": {"type": "string", "enum": ["markdown", "json"]}, "limit": I, "offset": I, "max_chars": I}, ["repository", "run_id", "format"]),
+}
+
+
+TOOL_NAMES = tuple(SCHEMAS)
+
+def register(ctx):
+    """Only register supported surfaces. No database, network, installs, or background work."""
+    from .operator import configure_parser, dispatch
+    for name in TOOL_NAMES:
+        def handler(args, _name=name, **kwargs):
+            return handle(ctx, _name, args, **kwargs)
+        ctx.register_tool(name=name, toolset="review_ledger", schema=SCHEMAS[name], handler=handler)
+    ctx.register_skill("review-ledger", SKILL_PATH)
+    ctx.register_cli_command(name="review-ledger", help="Review Ledger local operator actions",
+                             setup_fn=configure_parser, handler_fn=lambda args: dispatch(ctx, args))

@@ -1,0 +1,78 @@
+name: Native core and Hermes tests
+
+on:
+  # Manual until the owner has checked available Actions quota/billing.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-tests:
+    name: ${{ matrix.os }} / Python 3.14 / real Hermes
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: Linux
+          - os: macos-latest
+            platform: Darwin
+          - os: windows-latest
+            platform: Windows
+    defaults:
+      run:
+        working-directory: ledger
+    env:
+      PYTHONUTF8: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      # Official action releases, pinned to immutable commits.
+      - name: Check out Review Ledger
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ledger
+          persist-credentials: false
+      - name: Check out the public Hermes contract
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: NousResearch/hermes-agent
+          ref: 0dbaf33f67acf1f6d8e8e6c6efe8042ef8db98c4
+          path: hermes-source
+          persist-credentials: false
+      - name: Set up Python 3.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Verify native runtime and exact Hermes revision
+        run: >-
+          python scripts/ci/run_native_tests.py
+          --hermes-source ../hermes-source
+          --expected-platform ${{ matrix.platform }}
+          --preflight-only
+      - name: Install Ledger test and Hermes base runtime dependencies
+        # Hermes supports editable source installs; no extras, model keys,
+        # personal profiles, installation scripts, or publishing are used.
+        run: python -m pip install -e ".[test]" -e "../hermes-source"
+      - name: Run all core and real Hermes tests, with no skipped tests
+        run: >-
+          python scripts/ci/run_native_tests.py
+          --hermes-source ../hermes-source
+          --expected-platform ${{ matrix.platform }}
+      - name: Check reporting gates
+        run: python -m unittest discover -s scripts/ci -p "test_*.py" -v
+      - name: Upload runtime identity, full test log, JUnit and counts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-${{ matrix.os }}-py314-${{ github.run_attempt }}
+          path: ledger/ci-artifacts/
+          if-no-files-found: error
+          retention-days: 14

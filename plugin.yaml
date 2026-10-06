@@ -1,0 +1,24 @@
+name: review-ledger
+version: 0.1.0
+description: Profile-local review investigations and explicitly approved lessons
+provides_tools:
+  - ledger_open
+  - ledger_status
+  - ledger_run
+  - ledger_record
+  - ledger_recall
+  - ledger_lesson
+  - ledger_export
+config_schema:
+  authorized_repositories:
+    type: list
+    default: []
+    description: Explicit GitHub owner/name allowlist for this profile
+  github_token_env:
+    type: str
+    default: REVIEW_LEDGER_GITHUB_TOKEN
+    description: Name of the environment variable containing the GitHub read token
+  context_budget:
+    type: int
+    default: 6000
+    description: Maximum serialized characters of recalled lesson context (500 to 20000)

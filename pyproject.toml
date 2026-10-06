@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=75,<82"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-review-ledger"
+version = "0.1.0"
+description = "Persistent review bookkeeping and operator-approved conditional lessons for Hermes"
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8.4,<9"]
+
+[tool.setuptools.packages.find]
+include = ["review_ledger*"]
+
+[tool.setuptools.package-data]
+review_ledger = ["migrations/*.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
