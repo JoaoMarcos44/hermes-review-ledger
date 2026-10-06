@@ -95,15 +95,26 @@ from tools.registry import registry
 from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
 def install_fixture(home):
-    target = home / "plugins" / "review-ledger"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(ROOT, target, ignore=shutil.ignore_patterns(
-        ".git", "__pycache__", ".pytest_cache", ".venv", "dist", "build", "*.egg-info",
-        "ci-artifacts"))
-    (home / "config.yaml").write_text(
+    # The installer selects an existing profile explicitly and must leave its
+    # operator-owned settings untouched. Only these temporary profiles are used.
+    home.mkdir(parents=True, exist_ok=True)
+    config = home / "config.yaml"
+    config.write_text(
         "plugins:\\n  isolation: in_process\\n  enabled: [review-ledger]\\n"
         "  entries:\\n    review-ledger:\\n      settings:\\n"
         "        authorized_repositories: [Example/project]\\n", encoding="utf-8")
+    original_config = config.read_bytes()
+    sys.path.insert(0, str(ROOT))
+    try:
+        from review_ledger.installer import install
+        result = install(home)
+    finally:
+        sys.path.pop(0)
+    target = home / "plugins" / "review-ledger"
+    assert isinstance(result, dict), result
+    assert target.is_dir()
+    assert config.read_bytes() == original_config
+    assert not (home / "plugin-data").exists()
     return target
 
 def load_fixture():
@@ -185,7 +196,7 @@ def open_fixture(loaded, session="session-a", key="open-1"):
 def test_actual_plugin_doctor(hermes_source, tmp_path):
     _runtime(hermes_source, tmp_path, """
 from hermes_cli.plugin_dev import doctor_plugin
-report = doctor_plugin(ROOT)
+report = doctor_plugin(install_fixture(HOME))
 assert report.ok, report.format_text()
 assert set(report.registered_tools) == EXPECTED_TOOLS, report.format_text()
 assert not report.findings, report.format_text()

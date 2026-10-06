@@ -26,15 +26,73 @@ Relevant public sources:
 - [Python sqlite3](https://docs.python.org/3/library/sqlite3.html)
 - [pytest temporary fixtures](https://docs.pytest.org/en/stable/how-to/tmp_path.html)
 
-## Local installation
+## Command-line installation
 
-This V1 is a directory plugin. The complete source directory must include `plugin.yaml`, the root `__init__.py`, `review_ledger/`, and `skills/`. Installing only its Python library wheel does not install a native Hermes plugin or the skill.
+Choose an existing Hermes profile and stop its Hermes sessions before changing
+plugin code. The installer requires an absolute directory containing an existing
+`config.yaml`. It never guesses the default profile, creates a new profile, edits
+configuration, upgrades Hermes, reads credentials, or enables the plugin.
 
-1. Choose an existing Hermes profile through Hermes' normal profile mechanism, or explicitly select a profile directory using `HERMES_HOME`. Do not replace an existing profile's configuration.
-2. Copy this source directory into that profile's `plugins/review-ledger/` directory. Avoid overwriting an existing plugin directory. The supported native discovery mechanism loads the manifest and root `register(ctx)`.
-3. Merge the configuration below into that profile's `config.yaml`. Keep its other settings and authorized repositories. `plugins.isolation` applies to the entire profile: this V1 needs `in_process` for its operator CLI. If the profile requires `host` isolation, use a separate suitable profile rather than silently weakening that policy.
-4. Run `hermes plugins doctor /absolute/path/to/plugins/review-ledger --ci`, `hermes plugins validate /absolute/path/to/plugins/review-ledger`, and `hermes plugins list`. If this plugin was previously disabled, `hermes plugins enable review-ledger` removes its explicit disabled entry; a disabled entry otherwise takes precedence over the enabled list.
-5. Start a new Hermes session in the selected profile. Ask it to load `review-ledger:review-ledger` using `skill_view`; `skills_list` gives the exact qualified name in the tested runtime.
+### One command from a source checkout
+
+With this private repository already checked out, run in its root directory:
+
+```sh
+python -m review_ledger install --profile-dir "/absolute/path/to/your/hermes-profile"
+```
+
+Use the Python interpreter for your environment: `python3` on many Linux/macOS
+setups, or `py -3.14` on Windows if that is how your installed Python is selected.
+The same command works with a quoted Windows path, for example:
+
+```powershell
+py -3.14 -m review_ledger install --profile-dir "C:\Users\YourName\Hermes Profiles\reviews"
+```
+
+This source-checkout installation is offline and uses only the Python standard
+library. Python 3.12–3.14 can run the installer; the pinned Hermes runtime used by
+this project's integration tests itself requires Python 3.14.
+
+### Install the Python command with pip
+
+In a virtual environment, pip can obtain the package directly from the private
+Git repository. Replace `COMMIT_SHA` with the exact reviewed 40-character commit:
+
+```sh
+python -m pip install "git+ssh://git@github.com/JoaoMarcos44/hermes-review-ledger.git@COMMIT_SHA"
+hermes-review-ledger install --profile-dir "/absolute/path/to/your/hermes-profile"
+```
+
+Git and access to the private repository must already work through your own SSH
+configuration. An existing authenticated HTTPS Git setup can instead use the
+same repository's HTTPS URL. Never put a token/password in the URL, command,
+conversation, or source. Nothing has been released on npm or PyPI. Do not use an
+unqualified registry package with this name as a substitute.
+
+Pip installs the command and a complete bundled native-plugin payload. It does
+not select or modify a Hermes profile. The explicit `install --profile-dir` step
+copies `plugin.yaml`, the root `__init__.py`, runtime modules, SQL migration, and
+bundled skill together. If the console command is not on PATH, use
+`python -m review_ledger` with that virtual environment's interpreter.
+
+A locally built wheel can be installed offline with
+`python -m pip install --no-index --no-deps /path/to/the-built-wheel.whl`, followed
+by the same profile installation command. Wheels and source distributions are
+built and checked in tests; they are not automatically published anywhere.
+
+### Enable and configure the selected profile
+
+Installation is only the code-copy step. Merge the following configuration into
+that same profile's `config.yaml`, retaining its other settings. Enabling a
+plugin loads local code with the user's permissions. `plugins.isolation` applies
+to the entire profile: the complete V1 operator CLI requires `in_process`.
+If a profile requires `host` isolation, choose a separate suitable profile. The
+installer does not change this policy or silently grant activation.
+
+Existing enabled/disabled entries and Hermes' own profile migration rules still
+govern what loads at the next startup. Installing or upgrading code does not
+reset that policy. Inspect the selected profile's configuration and plugin list
+before restarting, particularly when the plugin was enabled previously.
 
 ```yaml
 plugins:
@@ -54,7 +112,61 @@ Use the standard Hermes environment configuration to supply `REVIEW_LEDGER_GITHU
 
 Use a token limited to the authorized repositories and read access required by GitHub's pull-request endpoints. Even public PR reads require an explicitly supplied token in this V1. Authorization is checked before network access and the stable repository ID returned by GitHub is checked against stored identity.
 
-To remove the code, first disable it with `hermes plugins disable review-ledger`, stop existing sessions, and remove only the installed plugin directory through Hermes' supported removal workflow. Review Ledger has no data deletion hook. Its SQLite data and optional artifacts are outside the installed code; retain them or back them up separately. Removing plugin configuration can remove the repository allowlist; restore that configuration before reusing retained data.
+After reviewing configuration, use Hermes' normal profile selection or set
+`HERMES_HOME` to the exact directory passed to the installer. In that same
+profile run `hermes plugins enable review-ledger` if activation is intended;
+this also removes an explicit disabled entry, which otherwise wins over enabled.
+Then run `hermes plugins doctor /absolute/profile/plugins/review-ledger --ci`,
+`hermes plugins validate /absolute/profile/plugins/review-ledger`, and
+`hermes plugins list`. Start a fresh session and load the qualified skill
+`review-ledger:review-ledger` through `skill_view`.
+
+### Reinstall, upgrade, status and removal
+
+Run `install` again after selecting the desired package/source revision. Identical
+content is a no-op. An upgrade replaces only an intact installer-owned code tree;
+its manifest records every shipped file's SHA-256. Modified files, unrecognized
+contents, manual installations, links/junctions, or malformed ownership metadata
+are refused. There is no force-overwrite flag. Keep a manual installation aside
+yourself after inspecting it; the installer does not adopt it automatically.
+
+```sh
+python -m review_ledger status --profile-dir "/absolute/path/to/your/hermes-profile"
+python -m review_ledger uninstall --profile-dir "/absolute/path/to/your/hermes-profile"
+```
+
+Before uninstalling, disable the plugin through Hermes in that same profile and
+stop its sessions. Uninstall removes only the installer-owned plugin code. It
+retains configuration, repository allowlists, profile-local SQLite data, lessons,
+artifacts and backups. Pip uninstall alone removes the Python command, not the
+code copied to a profile. Remove profile code first if that is your intention.
+
+The installer holds an OS-level per-profile lock and prepares complete code
+outside Hermes' discovery directory. It journals the replacement and restores
+the previous code if publication fails. A process interruption during replacement
+is recovered before the next install/uninstall. It does not retain a successful
+upgrade's old code as permanent version history. Use a reviewed earlier source
+revision for an intentional code downgrade, subject to its data-schema support.
+
+Close Hermes or other programs holding code files on Windows and retry a reported
+sharing violation. If rollback itself is blocked, the error identifies the private
+installer state containing the previous code; preserve it and rerun after fixing
+access. Partial cleanup of unchanged owned files is retryable. Configuration and
+plugin-data are never part of this transaction. The persistent lock/state files
+are small management metadata, not ledger storage.
+
+The lock descriptor must identify a regular file without physical aliases.
+Existing lock contents are never initialized or rewritten; an empty lock left
+by an interrupted first creation can still be locked and reused.
+
+A hard termination while preparing a new tree can leave a hidden
+`.review-ledger-prepare-*` directory beside the profile configuration. It is not
+discovered by Hermes and does not block the next install. Inspect any abandoned
+preparation before removing it manually. Unknown or edited files are never
+silently cleaned up. Local, same-volume filesystems are required for rename
+publication; network shares and sudden power-loss durability are not certified.
+The lock coordinates this installer, not concurrent edits by other programs with
+the same local user's permissions.
 
 ## What activates the plugin
 
@@ -258,13 +370,13 @@ The suite covers Unicode/spaced profile paths, real filesystem cleanup, determin
 
 Actual validation results are recorded only after running the final source. Do not infer coverage for an OS without an execution report from its real native runner. Live GitHub authentication, a real user PR pilot, and a full interactive model conversation require separate validation. The plugin does not claim measured improvement in review quality.
 
-The validation totals and actual command output are recorded in the accompanying implementation report and native CI artifacts, each tied to the source revision. Missing, pending, failed, or skipped native runs are never counted as passes. The official CLI Plugin Doctor reported 7 tools and 0 hooks with no findings. `hermes plugins validate` passed, including manifest/registration agreement and its no-core-override check. Source distribution and library wheel builds succeeded. Build artifacts are local and were not published.
+The validation totals and actual command output are recorded in the accompanying implementation report and native CI artifacts, each tied to the source revision. Missing, pending, failed, or skipped native runs are never counted as passes. The official CLI Plugin Doctor reported 7 tools and 0 hooks with no findings. `hermes plugins validate` passed, including manifest/registration agreement and its no-core-override check. Source distribution and complete installer wheel builds succeeded. Build artifacts are local and were not published.
 
 ## Source layout and licensing
 
 Runtime modules use only the Python standard library. Hermes integration is confined to `tools.py` and the local operator adapter. Domain models, service and learning do not import Hermes or any model SDK.
 
-The initial SQL migration is inside `review_ledger/migrations/` so Python source distributions can include it reliably. There is one authoritative editable store, SQLite; reports and exports are derived output.
+The initial SQL migration is inside `review_ledger/migrations/`. `setup.py` builds the wheel’s complete native-plugin payload from the authoritative root manifest, entry point, skill and runtime files; there is no second editable copy to keep in sync. `review_ledger/installer.py` implements the explicit profile command. There is one authoritative editable store, SQLite; reports and exports are derived output.
 
 No project license or authorship declaration is invented. Licensing remains the repository owner's decision. Upstream Hermes source was used for compatibility verification in a separate checkout and is not vendored into this repository.
 
