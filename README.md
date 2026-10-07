@@ -1,4 +1,4 @@
-# Hermes Review Ledger 0.2.0
+# Hermes Review Ledger 0.4.0
 
 <p align="center">
   <img src="docs/assets/ledger-pixel.gif" width="640" height="360" alt="Ledger, a green-haired, purple-suited pixel character, laughing and holding a playing card. Silent animation." />
@@ -6,6 +6,9 @@
 
 **Meet Ledger.** The project's visual identity is a tribute to Heath Ledger and his portrayal of the Joker.
 The animation is silent. [View the still image](docs/assets/ledger-pixel.png).
+
+
+**V1.5 pilot:** [installation, exact defaults, operator/agent workflow, version mapping, limitations and evaluation](docs/v15-pilot.md). The original workflow remains available with pilot features disabled.
 
 A small native Hermes plugin for persistent, profile-local GitHub PR investigations and operator-approved conditional investigation lessons.
 
@@ -57,8 +60,8 @@ The same command works with a quoted Windows path, for example:
 py -3.14 -m review_ledger install --profile-dir "C:\Users\YourName\Hermes Profiles\reviews"
 ```
 
-This source-checkout installation is offline and uses only the Python standard
-library. Python 3.12–3.14 can run the installer; the pinned Hermes runtime used by
+This source-checkout installation is offline and uses the Python standard
+library for installation; optional skill registration requires packaged PyYAML. Python 3.12–3.14 can run the installer; the pinned Hermes runtime used by
 this project's integration tests itself requires Python 3.14.
 
 ### Install the Python command with pip
@@ -182,10 +185,10 @@ There are three separate steps: installing its files, enabling discovery in a
 chosen Hermes profile, and invoking a tool for an authorized review. Merely copying
 this directory or loading its skill does not start a review.
 
-- Hermes discovery calls the root `register(ctx)`, which registers eight tools,
+- Hermes discovery calls the root `register(ctx)`, which registers nine tools (context and critic are disabled by default),
   one skill, and the operator CLI. Registration opens no database, reads no GitHub
   token, performs no HTTP requests, and starts no background task.
-- `ledger_open` is the normal review network-facing tool. After trusted-session and
+- `ledger_open` is the only network-facing tool. After trusted-session and
   repository checks, it reads a scoped review generation, fetches the authorized
   GitHub PR, and opens or reuses its run. The SQLite file is created lazily when a
   ledger operation first needs storage. No GitHub credentials are needed merely
@@ -208,7 +211,7 @@ a self-improvement loop. The separate optional critic is described below.
 
 ### Optional claim critic
 
-Version 0.2.0 adds one tool, `ledger_critic`, with `prepare`, `run`, `status` and
+Integrated version 0.4.0 includes one optional critic tool, `ledger_critic`, with `prepare`, `run`, `status` and
 `assess` actions. The critic is disabled by default. Preparation and reading are
 local; only explicit execution reaches the optional provider boundary. The
 pinned Hermes host cannot publicly prove its complete effective egress/fallback
@@ -383,14 +386,22 @@ bounded lock waits are used. Database contention produces an explicit error;
 retry with the same request key. Network calls and optional artifact staging are
 outside database writer transactions.
 
-The current data schema is version 3. First access upgrades an authorized
-version-1/2 database atomically, adding query indexes as needed and the critic
-tables and source references; review records, receipts, lessons, and artifacts
-are preserved. Two processes coordinate the upgrade with
-the same SQLite writer lock. Index creation can take time on a large history;
-stop sessions and retain a verified backup before an intentional upgrade.
-Older code supporting only schema version 1 or 2 refuses a version-3 database. Downgrading code does
-not downgrade data, and no automatic schema downgrade is provided.
+The current data schema is version 4, preserving the `adaptive-v15` lineage.
+First access upgrades an authorized version-1/2 database or genuine V1.5
+schema-3 database atomically: query indexes, adaptive context and critic tables
+are applied in order. Review records, receipts, exact resources, approvals,
+usage records, lessons and artifacts are preserved. Two processes coordinate
+migration with the same SQLite writer lock. Stop sessions and retain a verified
+backup before upgrading.
+
+The experimental critic 0.2.0 schema 3 is incompatible and is refused without
+mutation. Never relabel its version or lineage. Back it up with the original
+experimental tooling, retaining its artifacts and later history separately.
+Use a fresh empty profile, or restore a verified pre-experimental V1/V2 backup
+at its original resolved profile data path; ownership is path-bound. Do not
+rewrite the ownership key or move a restored database to another profile. See the
+[V1.5 compatibility guide](docs/v15-pilot.md#release-identities-and-compatibility).
+Older code refuses schema 4; no automatic schema downgrade is provided.
 
 ### Explicit SQLite journal policy
 
@@ -491,11 +502,11 @@ The suite covers Unicode/spaced profile paths, real filesystem cleanup, determin
 
 Actual validation results are recorded only after running the final source. Do not infer coverage for an OS without an execution report from its real native runner. Live GitHub authentication, a real user PR pilot, and a full interactive model conversation require separate validation. The plugin does not claim measured improvement in review quality.
 
-The validation totals and actual command output are recorded in the accompanying implementation report and native CI artifacts, each tied to the source revision. Missing, pending, failed, or skipped native runs are never counted as passes. Earlier 0.1.0 validation reported 7 tools and 0 hooks with no findings; that result is historical, not validation of the new eighth tool. The earlier `hermes plugins validate` pass included manifest/registration agreement and its no-core-override check. New validation results must be tied to 0.2.0; the old native results do not certify this extension. Package tests build and install the source distribution and complete installer wheel locally; artifacts are not published.
+The validation totals and actual command output are recorded in the accompanying implementation report and native CI artifacts, each tied to the source revision. Missing, pending, failed, or skipped native runs are never counted as passes. Earlier 0.1.0 validation reported 7 tools and 0 hooks with no findings; that result is historical, not validation of the integrated nine-tool release. The earlier `hermes plugins validate` pass included manifest/registration agreement and its no-core-override check. New validation results must be tied to integrated 0.4.0; the old native results do not certify this extension. Package tests build and install the source distribution and complete installer wheel locally; artifacts are not published.
 
 ## Source layout and licensing
 
-Runtime modules use only the Python standard library. Hermes integration is confined to `tools.py`, `critic_hermes.py` and the local operator adapter. Domain models, service and learning do not import Hermes or any model SDK.
+Runtime modules use the Python standard library and PyYAML for safe local skill frontmatter parsing. Hermes integration is confined to `tools.py`, `critic_hermes.py` and the local operator adapter. Domain models, service and learning do not import Hermes or any model SDK.
 
 The initial SQL migration is inside `review_ledger/migrations/`. `setup.py` builds the wheel’s complete native-plugin payload from the authoritative root manifest, entry point, skill and runtime files; there is no second editable copy to keep in sync. `review_ledger/installer.py` implements the explicit profile command. There is one authoritative editable store, SQLite; reports and exports are derived output.
 

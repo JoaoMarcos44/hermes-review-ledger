@@ -1,4 +1,4 @@
-# Optional claim critic (0.2.0)
+# Optional claim critic (integrated 0.4.0)
 
 The critic examines up to three selected, recorded review claims. It does not
 independently redo the PR review or promise to detect omitted defects. An opinion
@@ -27,7 +27,7 @@ Reference: [Hermes public plugin LLM access](https://hermes-agent.nousresearch.c
 
 ## Operator configuration
 
-These are the exact safe initial values in `plugins.settings.review-ledger`:
+These are the exact safe initial values in `plugins.entries.review-ledger.settings`:
 
 ```yaml
 critic_enabled: false
@@ -89,9 +89,9 @@ using the same known model is self-critique, not independent evaluation.
 
 ## Persistence, checks and recovery
 
-Schema 3 adds critic records, source links, results and adjudications to the
-existing SQLite store. Version-1/2 upgrades retain existing data and journal
-policy; take and verify a backup before upgrading. No automatic downgrade is
+Migration 004/schema 4 adds critic records, source links, results and
+adjudications while preserving V1.5 adaptive-context data. Version-1/2 and
+genuine V1.5 schema-3 upgrades retain existing data and journal policy; take and verify a backup before upgrading. No automatic downgrade is
 provided. The installer includes the prompt and every migration in source,
 sdist, wheel and installed directory payloads.
 
@@ -166,3 +166,15 @@ per objection; exhaustion is an explicit error, never silent truncation.
 The preserved manual pilot describes comparisons of A and A+B with a fixed
 snapshot, explicit contracts, equal budgets, independent adjudication and held-out
 cases. This release implements traceable bookkeeping, not measured improvement.
+
+## Integrated schema compatibility
+
+The integrated release uses schema 4, preserving V1.5 adaptive-context schema 3
+and adding critic records in migration 004. Genuine V1/V2 and V1.5 databases
+upgrade transactionally; the historical experimental critic schema 3 is refused
+without mutation. See [migration and backup guidance](v15-pilot.md#release-identities-and-compatibility).
+
+Critic-linked lessons retain their exact assessment and verification provenance
+when V1.5 proposes an improved version. Reassessment or invalidated evidence
+makes the derived version ineligible; a new operator approval never substitutes
+for current, valid provenance.

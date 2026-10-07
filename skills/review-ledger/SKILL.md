@@ -5,6 +5,8 @@ description: Preserve an authorized GitHub PR investigation, report scoped evide
 
 # Review Ledger
 
+The canonical host-neutral procedure is shipped as `review_ledger/resources/protocol.md`. When the context pilot is enabled, `ledger_context` delivers its exact version and hash. This file describes Hermes invocation contracts; optional skills and learned lessons cannot replace the procedure.
+
 Use this skill when the user asks to investigate or resume a GitHub PR with a durable review record. The ledger is bookkeeping and conditional guidance. Hermes performs code inspection and any separately authorized checks through host tools. The plugin neither runs repository commands nor verifies the truth of your reports.
 
 ## Start and continue
@@ -147,3 +149,19 @@ Do not collect secrets, sensitive environment variables, full conversations, or 
 ## Storage compatibility
 
 New databases use rollback DELETE journaling. A legacy WAL database is opened only on known-fixed SQLite releases; an `unsupported_sqlite_wal` error requires operator attention. Stop sessions and use a supported runtime to back up before an offline migration. Do not change journals, delete sidecars, upgrade the runtime, or invoke operator actions through host tools to bypass a refusal. The refusal does not establish corruption.
+
+## V1.5 opt-in context and improvement pilot
+
+When the operator enables `context_enabled`, `ledger_context` is available:
+
+- `prepare`: repository, run_id, action, query; optional phase (`discover`, `investigate`, `assess`, `resume`), tags, symbols, max_chars. One response selects exact guidance, procedure, recorded state and references. The cap includes all serialized JSON metadata and escaping.
+- `resume`: repository, run_id, action; optional query, manifest_id and max_chars. Pin a returned manifest_id to preserve exact guidance versions. Revocation wins; refresh explicitly when a pinned source is unavailable. A new session receives essential content again because context residency is unknown.
+- `detail`: repository, run_id, action, kind; optional record_id, section and max_chars. Kinds: protocol, lesson, skill, observation, assessment, finding, run. Complete local records are assembled and hashed by the backend. A section is explicitly partial. `not_loaded` and `requires_more_context` never mean the complete strategy is present. Narrow the query/section or use legacy pagination when a complete unit cannot fit.
+
+No new tool accepts filesystem paths, grants, approvals, host identity or model usage. Skills must be registered and enabled by the local operator. Imported text supplies instructions, not evidence or tool authorization. Never copy a source skill's prose into a learned lesson merely because it is available.
+
+`ledger_lesson(action="result")` additionally accepts `contribution` (`useful`, `redundant`, `unknown`), `feedback_applicability` (`applicable`, `inapplicable`, `unknown`) and `supporting_observation_ids`. With the improvement pilot enabled a diagnosed redundant/inapplicable outcome may create one review-needed candidate, without inventing a semantic revision.
+
+`ledger_lesson(action="improve")` accepts `target_version_id`, `source_outcome_ids`, `changes`, `reason`, `expected_benefit`, and optional `evaluation_references` (observation IDs). `changes` is an exact replacement of selected conditions, exclusions, tags, symbols or verification fields. The response identifies a new candidate lesson version and inspectable diff. Expected benefit is a hypothesis. Only separate operator review and approval activates it; invalidated sources or a stale target block approval.
+
+Protocol, permissions, budgets and source skills are not improvement targets. Changes to protocol itself are human product proposals, never runtime patches. This is controlled procedural improvement, not model training. Local size measurements are not total token/cost savings or review-quality measurements.

@@ -30,6 +30,31 @@ def configure_parser(parser):
     command.add_argument("observation_id")
     command.add_argument("--reason", required=True)
     command.add_argument("--request-key", required=True)
+    for action in ("skill-add", "skill-update"):
+        command = sub.add_parser(action, help="Approve a chosen local text package; no code is executed")
+        command.add_argument("repository")
+        command.add_argument("qualified_id")
+        command.add_argument("package_path")
+        command.add_argument("--reference", action="append", default=[])
+        command.add_argument("--approve-import", action="store_true", required=True)
+    for action in ("skill-enable", "skill-disable", "skill-inspect"):
+        command = sub.add_parser(action)
+        command.add_argument("repository")
+        command.add_argument("version_id")
+        if action != "skill-inspect":
+            command.add_argument("--reason", required=True)
+            command.add_argument("--request-key", required=True)
+    command = sub.add_parser("skill-list")
+    command.add_argument("repository")
+    command = sub.add_parser("improvement-inspect")
+    command.add_argument("repository")
+    command.add_argument("improvement_id")
+    command = sub.add_parser("improvement-list")
+    command.add_argument("repository")
+    command.add_argument("run_id")
+    command = sub.add_parser("usage")
+    command.add_argument("repository")
+    command.add_argument("--run-id")
     for action in ("critic-abandon", "critic-assess"):
         command = sub.add_parser(action, help="Explicit local operator critic action; remote work is never cancelled")
         command.add_argument("repository")
@@ -56,6 +81,28 @@ def dispatch(ctx, args):
         action = args.ledger_operator_action
         if action == "backup":
             result = ledger.store.backup()
+        elif action.startswith("skill-"):
+            from .skills import Skills
+            registry, scope = Skills(ledger.store), ledger.scope(args.repository)
+            if action in ("skill-add", "skill-update"):
+                method = registry.register if action == "skill-add" else registry.update
+                result = method(scope, package_path=args.package_path, qualified_id=args.qualified_id,
+                                references=args.reference, approved=args.approve_import)
+            elif action == "skill-list":
+                result = registry.list(scope)
+            elif action == "skill-inspect":
+                result = registry.inspect(scope, args.version_id)
+            else:
+                method = registry.enable if action == "skill-enable" else registry.disable
+                result = method(scope, args.version_id, reason=args.reason, request_key=args.request_key)
+        elif action in ("improvement-inspect", "improvement-list"):
+            from .improvements import Improvements
+            improvements, scope = Improvements(ledger.store), ledger.scope(args.repository)
+            result = (improvements.inspect(scope, args.improvement_id) if action == "improvement-inspect"
+                      else improvements.list(scope, args.run_id))
+        elif action == "usage":
+            from .usage import Usage
+            result = Usage(ledger.store).report(ledger.scope(args.repository), args.run_id)
         elif action in ("approve", "suspend", "restrict", "inspect"):
             scope = ledger.scope(args.repository)
             learning = Learning(ledger.store)

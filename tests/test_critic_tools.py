@@ -47,7 +47,7 @@ def invoke(context, args, actor):
 def test_registration_adds_exactly_one_tool_without_llm(tmp_path):
     context = Context(tmp_path)
     tools.register(context)
-    assert len(context.registered) == 8
+    assert len(context.registered) == 9
     assert {tool["name"] for tool in context.registered} == set(tools.TOOL_NAMES)
     assert context.llm_accesses == 0
     assert len(tools.SCHEMAS["ledger_critic"]["parameters"]["oneOf"]) == 4

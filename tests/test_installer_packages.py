@@ -120,6 +120,7 @@ def installed_package(tmp_path_factory) -> InstalledPackage:
     payload_files.extend((source / "review_ledger").glob("*.py"))
     payload_files.extend((source / "review_ledger" / "migrations").glob("*.sql"))
     payload_files.extend((source / "review_ledger" / "prompts").glob("*.md"))
+    payload_files.extend((source / "review_ledger" / "resources").glob("*.md"))
     payload_files.extend(path for path in (source / "skills").rglob("*") if path.is_file())
     expected_hashes = {
         path.relative_to(source).as_posix(): _digest(path.read_bytes())
@@ -131,7 +132,8 @@ def installed_package(tmp_path_factory) -> InstalledPackage:
         "review_ledger/__init__.py", "review_ledger/__main__.py",
         "review_ledger/installer.py", "review_ledger/tools.py",
         "review_ledger/storage.py", "review_ledger/migrations/001_initial.sql",
-        "review_ledger/migrations/003_critic.sql", "review_ledger/prompts/critic_v1.md",
+        "review_ledger/migrations/004_critic.sql", "review_ledger/prompts/critic_v1.md",
+        "review_ledger/migrations/003_adaptive_context.sql", "review_ledger/resources/protocol.md",
         "review_ledger/critic.py", "review_ledger/critic_hermes.py",
     } <= expected_hashes.keys()
 
@@ -150,6 +152,8 @@ def installed_package(tmp_path_factory) -> InstalledPackage:
     source_roots = list(extracted.iterdir())
     assert len(source_roots) == 1 and source_roots[0].is_dir(), source_roots
     sdist_source = source_roots[0]
+    for relative in ("docs/assets/ledger-pixel.gif", "docs/assets/ledger-pixel.png", "docs/assets/README.md"):
+        assert (sdist_source / relative).read_bytes() == (source / relative).read_bytes()
     _run(
         [sys.executable, "-I", "-X", "utf8", "-m", "build", "--wheel",
          "--no-isolation", "--outdir", distributions, sdist_source],

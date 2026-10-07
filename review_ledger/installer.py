@@ -141,13 +141,13 @@ def _payload() -> dict[str, bytes]:
     names = ["__init__.py", "plugin.yaml"]
     names += [p.relative_to(root).as_posix() for p in (root / "review_ledger").glob("*.py")]
     names += [p.relative_to(root).as_posix() for p in (root / "review_ledger" / "migrations").glob("*.sql")]
-    names += [p.relative_to(root).as_posix() for p in (root / "review_ledger" / "prompts").glob("*.md")]
     names += [p.relative_to(root).as_posix() for p in (root / "skills").rglob("*.md")]
+    names += [p.relative_to(root).as_posix() for p in (root / "review_ledger" / "resources").glob("*.md")]
+    names += [p.relative_to(root).as_posix() for p in (root / "review_ledger" / "prompts").glob("*.md")]
     required = {"review_ledger/tools.py", "review_ledger/migrations/001_initial.sql",
-                "skills/review-ledger/SKILL.md", "review_ledger/critic.py",
+                "skills/review-ledger/SKILL.md", "review_ledger/resources/protocol.md", "review_ledger/critic.py",
                 "review_ledger/critic_hermes.py", "review_ledger/critic_contract.py",
-                "review_ledger/prompts/critic_v1.md",
-                "review_ledger/migrations/003_critic.sql"}
+                "review_ledger/prompts/critic_v1.md", "review_ledger/migrations/004_critic.sql"}
     if not required.issubset(names):
         raise InstallError("Incomplete plugin payload; reinstall the package or use the complete source checkout")
     payload = {}
