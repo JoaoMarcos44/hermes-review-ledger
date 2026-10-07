@@ -105,6 +105,8 @@ def handle(ctx, name: str, arguments: dict, **kwargs) -> str:
                     limit=args.get("limit", 5), offset=args.get("offset", 0),
                     result_offset=args.get("result_offset", 0), context_budget=budget,
                 )
+        elif name == "ledger_critic":
+            result = _critic_action(ctx, ledger, repository, actor, args)
         elif name == "ledger_lesson":
             result = _record_lesson(ledger, repository, actor, args)
         else:
@@ -159,6 +161,43 @@ def _open_review(ctx, ledger: Ledger, repository: str, actor: Actor, args: dict)
     result["files_not_retained_in_snapshot"] = sum(item["filename"] not in retained_names for item in snapshot["files"])
     result["patch_notice"] = "GitHub patches may be missing or truncated; no code was executed."
     return result
+
+
+
+def _critic_action(ctx, ledger: Ledger, repository: str, actor: Actor, args: dict) -> dict:
+    """Validate the exact action before constructing optional inference surfaces."""
+    action = args["action"]
+    if action not in CRITIC_ACTION_SCHEMAS:
+        raise LedgerError("invalid_input", "Unknown critic action")
+    selected = CRITIC_ACTION_SCHEMAS[action]
+    fields(args, set(selected["properties"]), set(selected["required"]))
+    from .critic import Critic, CriticConfig
+    config = CriticConfig.from_context(ctx)
+    if action == "status":
+        return Critic(ledger, config).status(
+            repository, args["run_id"], critic_run_id=args.get("critic_run_id"),
+            offset=args.get("offset", 0), max_chars=args.get("max_chars", 24_000),
+        )
+    common = (repository, args["run_id"], actor, args["generation"], args["request_key"])
+    if action == "prepare":
+        return Critic(ledger, config).prepare(
+            *common, finding_ids=args["finding_ids"],
+            observation_ids=args.get("observation_ids", []),
+            assessment_ids=args.get("assessment_ids", []),
+        )
+    if action == "run":
+        # Disabled mode must not even construct a host provider or access ctx.llm.
+        if not config.enabled:
+            raise LedgerError("critic_disabled", "The optional critic is disabled")
+        from .critic_hermes import HermesCriticProvider
+        return Critic(ledger, config, provider=HermesCriticProvider(ctx, config)).run(
+            *common, critic_run_id=args["critic_run_id"],
+        )
+    return Critic(ledger, config).assess(
+        *common, critic_run_id=args["critic_run_id"], objection_id=args["objection_id"],
+        state=args["state"], basis=args["basis"], rationale=args["rationale"],
+        limitations=args["limitations"], observation_ids=args["observation_ids"],
+    )
 
 
 def _record_lesson(ledger: Ledger, repository: str, actor: Actor, args: dict) -> dict:
@@ -216,6 +255,36 @@ SCHEMAS = {
     "ledger_export": schema("ledger_export", "Generate a bounded Markdown/JSON snapshot; checks lesson revocations and missing artifacts. Does not publish or import.",
                             {**BASE, "format": {"type": "string", "enum": ["markdown", "json"]}, "limit": I, "offset": I, "max_chars": I}, ["repository", "run_id", "format"]),
 }
+
+
+_CRITIC_COMMON = {**BASE, "action": {"type": "string", "enum": ["prepare", "run", "status", "assess"]}}
+_IDS = {"type": "array", "items": S, "uniqueItems": True}
+CRITIC_ACTION_SCHEMAS = {}
+for _action, _properties, _required in (
+    ("prepare", {**WRITE, "finding_ids": {**_IDS, "minItems": 1, "maxItems": 3},
+                 "observation_ids": _IDS, "assessment_ids": _IDS},
+     [*WRITE, "finding_ids"]),
+    ("run", {**WRITE, "critic_run_id": S}, [*WRITE, "critic_run_id"]),
+    ("status", {**BASE, "critic_run_id": S, "offset": I, "max_chars": I}, [*BASE]),
+    ("assess", {**WRITE, "critic_run_id": S, "objection_id": S,
+                "state": {"type": "string", "enum": ["pending", "supported", "refuted", "inconclusive", "not_applicable"]},
+                "basis": {"type": "string", "enum": ["inspection", "behavior", "none"]},
+                "rationale": S, "limitations": S, "observation_ids": _IDS},
+     [*WRITE, "critic_run_id", "objection_id", "state", "basis", "rationale", "limitations", "observation_ids"]),
+):
+    CRITIC_ACTION_SCHEMAS[_action] = {
+        "type": "object", "properties": {**_properties, "action": {"type": "string", "enum": [_action]}},
+        "required": [*_required, "action"], "additionalProperties": False,
+    }
+_critic_properties = dict(_CRITIC_COMMON)
+for _action_schema in CRITIC_ACTION_SCHEMAS.values():
+    _critic_properties.update({key: value for key, value in _action_schema["properties"].items() if key != "action"})
+SCHEMAS["ledger_critic"] = schema(
+    "ledger_critic",
+    "Explicit optional claim criticism. prepare freezes selected ledger IDs without inference; run needs operator-configured consent and an authorized route; status reads bounded pages; assess records checks of objections. Opinions never confirm findings. No free-form prompt or route overrides.",
+    _critic_properties, [*BASE, "action"],
+)
+SCHEMAS["ledger_critic"]["parameters"]["oneOf"] = list(CRITIC_ACTION_SCHEMAS.values())
 
 
 TOOL_NAMES = tuple(SCHEMAS)

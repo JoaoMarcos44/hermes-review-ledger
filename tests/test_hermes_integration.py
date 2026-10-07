@@ -19,7 +19,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_TOOLS = {
     "ledger_open", "ledger_status", "ledger_run", "ledger_record",
-    "ledger_recall", "ledger_lesson", "ledger_export",
+    "ledger_recall", "ledger_lesson", "ledger_export", "ledger_critic",
 }
 
 

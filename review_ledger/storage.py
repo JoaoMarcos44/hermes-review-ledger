@@ -15,13 +15,18 @@ from uuid import uuid4
 
 from .models import Actor, IDENTIFIER, LedgerError, Scope, canonical, digest, integer, text
 
-SCHEMA_VERSION = 2
-MIGRATIONS = ("001_initial.sql", "002_query_indexes.sql")
+SCHEMA_VERSION = 3
+MIGRATIONS = ("001_initial.sql", "002_query_indexes.sql", "003_critic.sql")
 LEDGER_TABLES = frozenset({
     "ledger_meta", "repositories", "reviews", "runs", "observations", "findings",
     "assessments", "assessment_sources", "lesson_versions", "lesson_sources",
     "lesson_uses", "audit_events", "idempotency",
 })
+V2_TABLES = LEDGER_TABLES
+CRITIC_TABLES = frozenset({"critic_runs", "critic_findings", "critic_sources",
+    "critic_input_assessments", "critic_items", "critic_objections", "critic_assessments",
+    "critic_assessment_sources", "critic_lesson_links"})
+LEDGER_TABLES = V2_TABLES | CRITIC_TABLES
 MAX_ARTIFACT_BYTES = 64 * 1024
 MIN_SQLITE_VERSION = (3, 35, 0)
 DEFAULT_JOURNAL_MODE = "delete"
@@ -139,7 +144,8 @@ class Store:
                 raise LedgerError("unknown_schema", "Unversioned nonempty database is not a ledger")
             return version
         tables = {row[0] for row in objects if row[1] == "table"}
-        if version < 0 or not LEDGER_TABLES.issubset(tables):
+        required_tables = LEDGER_TABLES if version >= 3 else V2_TABLES
+        if version < 0 or not required_tables.issubset(tables):
             raise LedgerError("unknown_schema", "Versioned database does not have the ledger schema")
         stored = conn.execute("SELECT value FROM ledger_meta WHERE key='profile_key'").fetchone()
         if not stored or stored[0] != self.profile_key:

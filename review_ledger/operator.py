@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 
 from .learning import Learning
-from .models import LedgerError
+from .models import Actor, LedgerError
 
 
 def configure_parser(parser):
@@ -30,6 +30,22 @@ def configure_parser(parser):
     command.add_argument("observation_id")
     command.add_argument("--reason", required=True)
     command.add_argument("--request-key", required=True)
+    for action in ("critic-abandon", "critic-assess"):
+        command = sub.add_parser(action, help="Explicit local operator critic action; remote work is never cancelled")
+        command.add_argument("repository")
+        command.add_argument("run_id")
+        command.add_argument("critic_run_id")
+        command.add_argument("--request-key", required=True)
+        if action == "critic-abandon":
+            command.add_argument("--reason", required=True)
+        else:
+            command.add_argument("--generation", required=True, type=int)
+            command.add_argument("--objection-id", required=True)
+            command.add_argument("--state", required=True, choices=["pending", "supported", "refuted", "inconclusive", "not_applicable"])
+            command.add_argument("--basis", required=True, choices=["none", "inspection", "behavior"])
+            command.add_argument("--rationale", required=True)
+            command.add_argument("--limitations", required=True)
+            command.add_argument("--observation-id", action="append", default=[])
     sub.add_parser("backup", help="Create SQLite API backup and verify a temporary restored copy")
 
 
@@ -51,6 +67,14 @@ def dispatch(ctx, args):
         elif action in ("transfer", "release"):
             result = ledger.operator_transfer(args.repository, args.run_id, args.session if action == "transfer" else None,
                                               args.generation, args.reason, args.request_key)
+        elif action == "critic-abandon":
+            from .critic import Critic
+            result = Critic(ledger).abandon(args.repository, args.run_id, args.critic_run_id, args.reason, args.request_key)
+        elif action == "critic-assess":
+            from .critic import Critic
+            result = Critic(ledger).assess(args.repository, args.run_id, Actor("local_operator"), args.generation,
+                                          args.request_key, args.critic_run_id, args.objection_id, args.state,
+                                          args.basis, args.rationale, args.limitations, args.observation_id, operator=True)
         elif action == "invalidate":
             result = ledger.operator_invalidate(args.repository, args.observation_id, args.reason, args.request_key)
         else:

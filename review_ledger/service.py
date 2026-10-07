@@ -538,6 +538,17 @@ class Ledger:
             AND id IN (SELECT assessment_id FROM assessment_sources WHERE repository_id=? AND observation_id=?)""", (scope.repository_id, scope.repository_id, observation_id))
         conn.execute("""UPDATE lesson_versions SET state='suspended',reason=? WHERE repository_id=? AND state='active'
             AND id IN (SELECT version_id FROM lesson_sources WHERE repository_id=? AND observation_id=?)""", ("Source invalidated: " + reason, scope.repository_id, scope.repository_id, observation_id))
+        conn.execute("""UPDATE critic_runs SET freshness='needs_revalidation' WHERE repository_id=? AND freshness='current'
+            AND id IN (SELECT critic_run_id FROM critic_sources WHERE repository_id=? AND observation_id=?)""", (scope.repository_id, scope.repository_id, observation_id))
+        conn.execute("""UPDATE critic_assessments SET freshness='needs_revalidation' WHERE repository_id=? AND freshness='current'
+            AND (id IN (SELECT assessment_id FROM critic_assessment_sources WHERE repository_id=? AND observation_id=?)
+            OR objection_id IN (SELECT o.id FROM critic_objections o JOIN critic_items i ON i.id=o.item_id
+                JOIN critic_runs r ON r.id=i.critic_run_id WHERE r.repository_id=? AND r.freshness!='current'))""",
+                     (scope.repository_id, scope.repository_id, observation_id, scope.repository_id))
+        conn.execute("""UPDATE lesson_versions SET state='suspended',reason=? WHERE repository_id=? AND state='active'
+            AND id IN (SELECT l.version_id FROM critic_lesson_links l JOIN critic_assessments a ON a.id=l.assessment_id
+                       WHERE l.repository_id=? AND a.freshness!='current')""",
+                     ("Critic verification requires revalidation: " + reason, scope.repository_id, scope.repository_id))
         Store.audit(conn, scope, observation_id, "invalidate_observation", actor, {"reason": reason})
 
     def operator_transfer(self, repository: str, run_id: str, session_id: str | None,

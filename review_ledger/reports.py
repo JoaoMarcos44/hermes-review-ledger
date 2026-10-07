@@ -6,6 +6,7 @@ import html
 import re
 
 from .learning import Learning
+from .critic import Critic
 from .models import Actor, LedgerError, choice, integer
 from .service import Ledger
 from .storage import now
@@ -53,16 +54,33 @@ def export(ledger: Ledger, repository: str, run_id: str, actor: Actor, *, format
                 if use["version_id"] not in seen:
                     lessons.append(Learning.version(conn, scope, use["version_id"]))
                     seen.add(use["version_id"])
+            critic_rows = conn.execute("SELECT * FROM critic_runs WHERE repository_id=? AND run_id=? ORDER BY rowid LIMIT ? OFFSET ?",
+                                       (scope.repository_id, run_id, limit + 1, offset)).fetchall()
+            omitted["critic_runs"] = len(critic_rows) > limit
+            criticism = [Critic.detail(conn, scope, row) for row in critic_rows[:limit]]
+            critic_assessments = [assessment for review in criticism for item in review["items"]
+                                  for objection in item["objections"] for assessment in objection["assessments"]]
+            verification_ids = sorted({ident for assessment in critic_assessments for ident in assessment["observation_ids"]})
+            verifications = []
+            for ident in verification_ids:
+                observation = dict(conn.execute("SELECT * FROM observations WHERE repository_id=? AND run_id=? AND id=?",
+                                                (scope.repository_id, run_id, ident)).fetchone())
+                if observation["artifact_id"]:
+                    observation["artifact"] = ledger.store.artifact_status(observation["artifact_id"])
+                verifications.append(observation)
             output = {"export_format_version": 1, "generated_at": now(),
                       "scope": {"repository_id": scope.repository_id, "repository_name": scope.repository_name,
                                 "profile_key": ledger.store.profile_key},
                       "run": snapshot, "snapshot": comparison_snapshot, **collections,
-                      "lesson_versions": lessons, "omitted": omitted,
+                      "lesson_versions": lessons, "critic_runs": criticism,
+                      "critic_verifications": verifications, "critic_assessments": critic_assessments, "omitted": omitted,
                       "next_offset": offset + limit if any(omitted.values()) else None,
                       "limitations": ["All observations are agent_reported, including inspection and behavioral reports.",
                                       "Schema validity does not verify semantic truth or execution.",
                                       "No findings, CI success, an exit code, or a 'fixed' message does not prove correctness.",
-                                      "Exports are bounded snapshots, not synchronization or import formats."]}
+                                      "Exports are bounded snapshots, not synchronization or import formats.",
+                                      "Critic-generated opinions are not execution evidence; agreement does not confirm a finding and disagreement does not refute it.",
+                                      "Current criticism reflects only Ledger known state, not live GitHub. Model independence is unknown."]}
             # Foreign-key references are retained even when their target is on another page.
             output["references"] = {"review_id": run["review_id"], "run_id": run_id,
                                     "skill_version": run["skill_version"], "skill_hash": run["skill_hash"]}
@@ -83,6 +101,9 @@ def markdown(data: dict) -> str:
              f"Run: {run['id']} ({run['status']})", f"HEAD: {run['head_sha']}", f"Base: {run['base_sha']}",
              f"Comparison: {run['comparison']}", f"Skill: {run['skill_version']} / {run['skill_hash']}"]
     lines.extend(_snapshot_lines(data.get("snapshot") or {}))
+    lines.extend(["", "## Original findings"])
+    for finding in data["findings"]:
+        lines.append("- " + _literal(json.dumps(finding, ensure_ascii=False, sort_keys=True)))
     lines.extend(["", "## Supported current assessments"])
     current = [a for a in data["assessments"] if a["state"] == "supported" and a["freshness"] == "current"]
     lines.extend(_assessment_lines(current) or ["None recorded on this page. Zero supported findings is a valid result."])
@@ -104,6 +125,19 @@ def markdown(data: dict) -> str:
     lines.extend(["", "## Lessons used"])
     for use in data["lesson_uses"]:
         lines.append(f"- {use['version_id']}: applicability={use['applicability']}; usefulness={use['usefulness']}; behavioral result={use['behavioral_result']}; execution block={use['execution_block']}; eligible now={use['eligible_now']}")
+    lines.extend(["", "## Critic opinions (critic-generated, not evidence)"])
+    for review in data.get("critic_runs", []):
+        # Preserve the entire packet, provenance, objections, conditions and limitations.
+        # Budget failure rejects the whole export rather than silently truncating fields.
+        opinion = {**review, "items": [{**item, "objections": [{k: v for k, v in objection.items() if k != "assessments"}
+                    for objection in item["objections"]]} for item in review["items"]]}
+        lines.append("- " + _literal(json.dumps(opinion, ensure_ascii=False, sort_keys=True)))
+    lines.extend(["", "## Critic verification observations (agent-reported)"])
+    for observation in data.get("critic_verifications", []):
+        lines.append("- " + _literal(json.dumps(observation, ensure_ascii=False, sort_keys=True)))
+    lines.extend(["", "## Critic objection assessments"])
+    for assessment in data.get("critic_assessments", []):
+        lines.append("- " + _literal(json.dumps(assessment, ensure_ascii=False, sort_keys=True)))
     lines.extend(["", "## Limitations"] + [f"- {item}" for item in data["limitations"]])
     if any(data["omitted"].values()):
         lines.append(f"- More records omitted. Request next offset {data['next_offset']}.")

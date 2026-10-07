@@ -72,11 +72,11 @@ def v1_store(root):
 def records(path):
     with closing(sqlite3.connect(path)) as conn:
         return {table: conn.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall()
-                for table in sorted(storage.LEDGER_TABLES)}
+                for table in sorted(storage.V2_TABLES)}
 
 
-def assert_v2(conn):
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+def assert_current_schema(conn):
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
     assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     for name, expected in INDEXES.items():
@@ -88,7 +88,7 @@ def test_v1_upgrade_preserves_all_records_receipts_and_foreign_keys(tmp_path):
     store = v1_store(tmp_path / "v1")
     before = records(store.path)
     with store.connect() as conn:
-        assert_v2(conn)
+        assert_current_schema(conn)
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         receipt = store.receipt(conn, Scope(1001, REPO), "fixture", "run_fixture", "retry", {"synthetic": True})
         assert receipt == {"state": "recorded", "preserved": True}
@@ -96,23 +96,23 @@ def test_v1_upgrade_preserves_all_records_receipts_and_foreign_keys(tmp_path):
     # Reopening an already upgraded file performs no additional migration.
     after = store.path.read_bytes()
     with store.connect() as conn:
-        assert_v2(conn)
+        assert_current_schema(conn)
     assert store.path.read_bytes() == after
     backup = store.backup()
     assert backup["restore_verified"] is True
     assert records(backup["path"]) == before
     with closing(sqlite3.connect(backup["path"])) as conn:
-        assert_v2(conn)
+        assert_current_schema(conn)
 
 
-def test_new_database_applies_both_migrations_and_backup_restores_v2(tmp_path):
+def test_new_database_applies_all_migrations_and_backup_restores_v3(tmp_path):
     store = Store(tmp_path / "new", PROFILE)
     with store.connect() as conn:
-        assert_v2(conn)
+        assert_current_schema(conn)
     backup = store.backup()
     assert backup["restore_verified"] is True
     with closing(sqlite3.connect(backup["path"])) as conn:
-        assert_v2(conn)
+        assert_current_schema(conn)
         assert conn.execute("SELECT value FROM ledger_meta WHERE key='profile_key'").fetchone()[0] == PROFILE
 
 
@@ -163,7 +163,7 @@ def test_interrupted_migration_rolls_back_indexes_and_schema_version(tmp_path, m
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='synthetic_partial'").fetchone() is None
     monkeypatch.setattr(store, "_migration", migrate)
     with store.connect() as conn:
-        assert_v2(conn)
+        assert_current_schema(conn)
 
 
 def _upgrade_worker(root, start, output):
@@ -190,7 +190,7 @@ def test_two_native_processes_upgrade_v1_once_without_changing_records(tmp_path)
         for worker in workers:
             worker.join(timeout=20)
             assert worker.exitcode == 0
-        assert results == [("ok", 2), ("ok", 2)], results
+        assert results == [("ok", 3), ("ok", 3)], results
     finally:
         for worker in workers:
             if worker.is_alive():
@@ -202,7 +202,7 @@ def test_two_native_processes_upgrade_v1_once_without_changing_records(tmp_path)
         output.join_thread()
     assert records(store.path) == before
     with store.connect() as conn:
-        assert_v2(conn)
+        assert_current_schema(conn)
 
 
 def test_receipt_checks_key_payload_and_repository_without_executing_a_write(ledger, opened, actor):
