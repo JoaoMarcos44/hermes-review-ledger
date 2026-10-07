@@ -152,6 +152,8 @@ def installed_package(tmp_path_factory) -> InstalledPackage:
     source_roots = list(extracted.iterdir())
     assert len(source_roots) == 1 and source_roots[0].is_dir(), source_roots
     sdist_source = source_roots[0]
+    for relative in ("docs/assets/ledger-pixel.gif", "docs/assets/ledger-pixel.png", "docs/assets/README.md"):
+        assert (sdist_source / relative).read_bytes() == (source / relative).read_bytes()
     _run(
         [sys.executable, "-I", "-X", "utf8", "-m", "build", "--wheel",
          "--no-isolation", "--outdir", distributions, sdist_source],

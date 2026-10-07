@@ -1,5 +1,13 @@
 # Hermes Review Ledger 0.4.0
 
+<p align="center">
+  <img src="docs/assets/ledger-pixel.gif" width="640" height="360" alt="Ledger, a green-haired, purple-suited pixel character, laughing and holding a playing card. Silent animation." />
+</p>
+
+**Meet Ledger.** The project's visual identity is a tribute to Heath Ledger and his portrayal of the Joker.
+The animation is silent. [View the still image](docs/assets/ledger-pixel.png).
+
+
 **V1.5 pilot:** [installation, exact defaults, operator/agent workflow, version mapping, limitations and evaluation](docs/v15-pilot.md). The original workflow remains available with pilot features disabled.
 
 A small native Hermes plugin for persistent, profile-local GitHub PR investigations and operator-approved conditional investigation lessons.
