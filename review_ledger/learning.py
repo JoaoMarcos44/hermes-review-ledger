@@ -14,6 +14,24 @@ def normalize_search(value: str) -> str:
     return unicodedata.normalize("NFC", unicodedata.normalize("NFC", value).casefold())
 
 
+def _search_text(question, conditions, exclusions, tags, symbols, verification) -> str:
+    """Search reported values, without treating JSON escapes as reported text."""
+    return normalize_search("\n".join([question, *conditions, *exclusions, *tags, *symbols, verification]))
+
+
+def _sql_search_text(question, conditions, exclusions, tags, symbols, verification) -> str:
+    # Python decoding keeps retrieval independent of SQLite's optional JSON1 extension.
+    return _search_text(question, json.loads(conditions), json.loads(exclusions),
+                        json.loads(tags), json.loads(symbols), verification)
+
+
+def _decode_version(row) -> dict:
+    item = dict(row)
+    for key in ("conditions", "exclusions", "tags", "symbols"):
+        item[key] = json.loads(item.pop(key + "_json"))
+    return item
+
+
 class Learning:
     def __init__(self, store: Store):
         self.store = store
@@ -32,12 +50,12 @@ class Learning:
         row = conn.execute("SELECT * FROM lesson_versions WHERE repository_id=? AND id=?", (scope.repository_id, version_id)).fetchone()
         if row is None:
             raise LedgerError("scope_not_found", "Lesson version is not in this repository and profile")
-        item = dict(row)
-        for key in ("conditions", "exclusions", "tags", "symbols"):
-            item[key] = json.loads(item.pop(key + "_json"))
-        item["sources"] = [dict(r) for r in conn.execute("""SELECT s.observation_id,s.relation,o.run_id,o.provenance,o.valid,o.outcome
-            FROM lesson_sources s JOIN observations o ON o.id=s.observation_id WHERE s.repository_id=? AND s.version_id=? ORDER BY s.observation_id LIMIT 20""", (scope.repository_id, version_id))]
-        item["eligible_now"] = Learning.eligible(conn, scope, version_id)
+        item = _decode_version(row)
+        sources = [dict(r) for r in conn.execute("""SELECT s.observation_id,s.relation,o.run_id,o.provenance,o.valid,o.outcome
+            FROM lesson_sources s JOIN observations o ON o.id=s.observation_id WHERE s.repository_id=? AND s.version_id=? ORDER BY s.observation_id LIMIT 21""", (scope.repository_id, version_id))]
+        item["sources"] = sources[:20]
+        item["eligible_now"] = (item["state"] == "active" and bool(sources) and len(sources) <= 20
+                                and all(s["valid"] and s["outcome"] in ELIGIBLE_OUTCOMES for s in sources))
         return item
 
     def propose(self, scope: Scope, run_id: str, actor: Actor, generation: int, data: dict, request_key: str):
@@ -123,7 +141,7 @@ class Learning:
         integer(offset, "offset", 0, 1_000_000)
         integer(result_offset, "result_offset", 0, 200)
         with self.store.connect() as conn:
-            conn.create_function("ledger_casefold", 1, normalize_search, deterministic=True)
+            conn.create_function("ledger_search_text", 6, _sql_search_text, deterministic=True)
             conn.execute("BEGIN")
             self.store.run(conn, scope, run_id)
             # SQL scope/state/text filtering and a bounded candidate window; no FTS dependency.
@@ -131,26 +149,45 @@ class Learning:
             for term in terms + tags + symbols:
                 # Parameter binding plus LIKE escaping keeps user text literal.
                 term = normalize_search(term).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                clauses.append("ledger_casefold(question || conditions_json || exclusions_json || tags_json || symbols_json || verification) LIKE ? ESCAPE '\\'")
+                clauses.append("ledger_search_text(question,conditions_json,exclusions_json,tags_json,symbols_json,verification) LIKE ? ESCAPE '\\'")
                 args.append("%" + term + "%")
             filter_sql = " AND (" + " OR ".join(clauses) + ")" if clauses else ""
             args.extend([201, offset])
-            rows = conn.execute("SELECT id FROM lesson_versions WHERE repository_id=? AND state='active'" + filter_sql + " ORDER BY lesson_id,version,id LIMIT ? OFFSET ?", args).fetchall()
+            rows = conn.execute("SELECT * FROM lesson_versions WHERE repository_id=? AND state='active'" + filter_sql + " ORDER BY lesson_id,version,id LIMIT ? OFFSET ?", args).fetchall()
+            window = rows[:200]
+            eligible_ids = set()
+            if window:
+                outcomes = sorted(ELIGIBLE_OUTCOMES)
+                source_args = [*outcomes, scope.repository_id, *(row["id"] for row in window)]
+                outcome_slots = ",".join("?" for _ in outcomes)
+                version_slots = ",".join("?" for _ in window)
+                source_rows = conn.execute(f"""SELECT s.version_id,COUNT(*) AS source_count,
+                    MIN(CASE WHEN o.valid=1 AND o.outcome IN ({outcome_slots}) THEN 1 ELSE 0 END) AS sources_eligible
+                    FROM lesson_sources s JOIN observations o ON o.id=s.observation_id
+                    WHERE s.repository_id=? AND s.version_id IN ({version_slots}) GROUP BY s.version_id""", source_args)
+                eligible_ids = {row["version_id"] for row in source_rows
+                                if 1 <= row["source_count"] <= 20 and row["sources_eligible"]}
+            normalized_terms = [normalize_search(term) for term in terms]
+            normalized_tags = {normalize_search(tag) for tag in tags}
+            normalized_symbols = {normalize_search(symbol) for symbol in symbols}
             candidates = []
-            for row in rows[:200]:
-                if not self.eligible(conn, scope, row[0]):
+            for row in window:
+                if row["id"] not in eligible_ids:
                     continue
-                item = self.version(conn, scope, row[0])
-                haystack = normalize_search(canonical(item))
-                score = (sum(1 for t in terms if normalize_search(t) in haystack)
-                         + 2 * len({normalize_search(t) for t in tags} & {normalize_search(t) for t in item["tags"]})
-                         + 3 * len({normalize_search(t) for t in symbols} & {normalize_search(t) for t in item["symbols"]}))
+                item = _decode_version(row)
+                haystack = _search_text(item["question"], item["conditions"], item["exclusions"],
+                                        item["tags"], item["symbols"], item["verification"])
+                score = (sum(1 for term in normalized_terms if term in haystack)
+                         + 2 * len(normalized_tags & {normalize_search(tag) for tag in item["tags"]})
+                         + 3 * len(normalized_symbols & {normalize_search(symbol) for symbol in item["symbols"]}))
                 candidates.append((score, item))
             candidates.sort(key=lambda pair: (-pair[0], pair[1]["lesson_id"], pair[1]["version"], pair[1]["id"]))
             selected, references, used, cursor = [], [], 0, result_offset
             for _, item in candidates[result_offset:]:
                 if len(selected) + len(references) >= limit:
                     break
+                # Load full source details only for this result page, in the same read snapshot.
+                item = self.version(conn, scope, item["id"])
                 size = len(canonical(item))
                 if used + size <= context_budget:
                     selected.append(item)

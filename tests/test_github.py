@@ -253,6 +253,42 @@ class GitHubClientTests(unittest.TestCase):
             self.assert_error("invalid_token", self.client())
         self.assertEqual(self.transport.calls, [])
 
+    def test_injected_token_resolver_is_authoritative_and_read_once(self):
+        resolved = []
+
+        def resolve(name):
+            resolved.append(name)
+            return "synthetic-scoped-token"
+
+        client = self.successful(token_env="REVIEW_TOKEN", token_resolver=resolve)
+        self.fetch(client)
+        self.assertEqual(resolved, ["REVIEW_TOKEN"])
+        self.assertTrue(all(call["headers"]["Authorization"] == "Bearer synthetic-scoped-token"
+                            for call in self.transport.calls))
+
+    def test_missing_resolved_token_never_falls_back_to_environment(self):
+        self.assert_error("missing_token", self.client(token_resolver=lambda name: None))
+        self.assertEqual(self.transport.calls, [])
+
+    def test_token_resolver_refusal_is_not_retried_or_replaced(self):
+        class ScopeRequired(RuntimeError):
+            pass
+
+        def refuse(name):
+            raise ScopeRequired("Synthetic scope refusal")
+
+        client = self.client(token_resolver=refuse)
+        with self.assertRaises(ScopeRequired):
+            self.fetch(client)
+        self.assertEqual(self.transport.calls, [])
+        self.assertEqual(self.sleeps, [])
+
+    def test_token_resolver_values_must_be_header_credentials(self):
+        for value in (False, 123, b"synthetic-bytes", []):
+            with self.subTest(value=value):
+                self.assert_error("invalid_token", self.client(token_resolver=lambda name: value))
+                self.assertEqual(self.transport.calls, [])
+
     def test_unauthorized_repository_is_refused_before_transport(self):
         client = self.client()
         with self.assertRaises(GitHubError) as context:
@@ -283,7 +319,7 @@ class GitHubClientTests(unittest.TestCase):
             {"timeout": 31}, {"timeout": 0}, {"timeout": float("inf")}, {"timeout": True},
             {"max_pages": 31}, {"max_pages": 0}, {"max_files": 3001},
             {"max_response_bytes": 5 * 1024 * 1024 + 1}, {"max_patch_chars": 100001},
-            {"max_retries": 3}, {"token_env": "BAD=NAME"},
+            {"max_retries": 3}, {"token_env": "BAD=NAME"}, {"token_resolver": "not-callable"},
         ]:
             with self.subTest(settings=settings), self.assertRaises(GitHubError):
                 self.client(**settings)

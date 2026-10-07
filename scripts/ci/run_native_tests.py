@@ -34,6 +34,7 @@ REQUIRED_INTEGRATION_TESTS = {
     "test_real_cli_approval_and_revocation_are_separate_from_model_tools",
     "test_real_tools_discover_historical_runs_without_cached_ids",
     "test_real_tool_unicode_budget_reference_and_complete_detail",
+    "test_real_scoped_github_credentials_and_unscoped_refusal",
 }
 
 

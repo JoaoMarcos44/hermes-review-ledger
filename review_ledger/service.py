@@ -1,11 +1,15 @@
 """Review operations and data-integrity rules; independent of the host runtime."""
 from __future__ import annotations
 
+import hashlib
 import json
 
 from .models import (Actor, Assessment, ELIGIBLE_OUTCOMES, LedgerError, OUTCOMES,
                      Scope, canonical, choice, digest, fields, integer, sha, strings, text)
 from .storage import Store, new_id, now
+
+
+MAX_SNAPSHOT_CHARS = 60_000
 
 
 class Ledger:
@@ -44,6 +48,46 @@ class Ledger:
                 (repository, pull_number),
             ).fetchone()[0]
 
+    @staticmethod
+    def _snapshot_metadata(snapshot: dict) -> dict:
+        """Retain a file prefix within the capture budget and record omissions."""
+        saved = {k: snapshot[k] for k in ("repository_id", "repository_full_name", "number", "head_sha", "base_sha", "comparison")}
+        saved.update({k: snapshot.get(k) for k in ("files_complete", "patches_complete", "total_files", "omitted_files", "truncation_reasons")})
+        saved["files"] = [{k: f.get(k) for k in ("filename", "previous_filename", "sha", "status", "patch_status")} for f in snapshot.get("files", [])]
+        if len(canonical(saved)) <= MAX_SNAPSHOT_CHARS:
+            return saved
+
+        files = saved["files"]
+        total, omitted = saved["total_files"], saved["omitted_files"]
+        known_omitted = omitted if type(omitted) is int and omitted >= 0 else None
+        if type(total) is int and total >= len(files):
+            known_omitted = max(known_omitted or 0, total - len(files))
+        reasons = saved["truncation_reasons"]
+        saved["truncation_reasons"] = list(reasons) if isinstance(reasons, (list, tuple)) else []
+        if "snapshot_metadata_budget" not in saved["truncation_reasons"]:
+            saved["truncation_reasons"].append("snapshot_metadata_budget")
+        saved["files_complete"] = False
+        saved["patches_complete"] = False
+
+        def capture(count):
+            saved["files"] = files[:count]
+            # Unknown upstream omissions stay unknown; a known count includes
+            # both upstream exclusions and the descriptors removed here.
+            saved["omitted_files"] = None if known_omitted is None else known_omitted + len(files) - count
+            return len(canonical(saved)) <= MAX_SNAPSHOT_CHARS
+
+        if not capture(0):
+            raise LedgerError("resource_limit", "Snapshot metadata outside file descriptors exceeds 60,000 characters")
+        low, high = 0, len(files)
+        while low < high:
+            middle = (low + high + 1) // 2
+            if capture(middle):
+                low = middle
+            else:
+                high = middle - 1
+        capture(low)
+        return saved
+
     def open(self, snapshot: dict, actor: Actor, request_key: str, *,
              expected_open_generation: int | None = None) -> dict:
         """Open supplied data; the trusted fetching adapter supplies its freshness guard."""
@@ -57,11 +101,7 @@ class Ledger:
         number = integer(snapshot["number"], "PR number", 1, 2**31 - 1)
         comparison = choice(snapshot["comparison"], "comparison", {"github_pr"})
         # Preserve comparison identity and completeness, not complete patches or conversations.
-        saved = {k: snapshot[k] for k in ("repository_id", "repository_full_name", "number", "head_sha", "base_sha", "comparison")}
-        saved.update({k: snapshot.get(k) for k in ("files_complete", "patches_complete", "total_files", "omitted_files", "truncation_reasons")})
-        saved["files"] = [{k: f.get(k) for k in ("filename", "previous_filename", "sha", "status", "patch_status")} for f in snapshot.get("files", [])]
-        if len(canonical(saved)) > 60_000:
-            raise LedgerError("resource_limit", "Snapshot metadata exceeds 60,000 characters; lower the GitHub file limit")
+        saved = self._snapshot_metadata(snapshot)
         scope = Scope(repo_id, name)
         with self.store.connect() as conn, self.store.transaction(conn):
             existing = conn.execute("SELECT * FROM repositories WHERE id=? OR name=? COLLATE NOCASE", (repo_id, name)).fetchall()
@@ -141,12 +181,13 @@ class Ledger:
                 "next_offset": offset + limit if len(rows) > limit else None,
                 "notice": "Recorded snapshots only; latest_recorded is not a fresh GitHub check. Historical assessments are not inherited."}
 
-    def history(self, repository: str, pull_number: int, *, limit=10, offset=0) -> dict:
+    def history(self, repository: str, pull_number: int, *, limit=10, offset=0, max_chars=24_000) -> dict:
         """Read a same-PR index even when a new session knows no prior run ID."""
         scope = self.scope(repository)
         integer(pull_number, "pull_number", 1, 2**31 - 1)
         integer(limit, "limit", 1, 25)
         integer(offset, "offset", 0, 1_000_000)
+        integer(max_chars, "max_chars", 4000, 64_000)
         with self.store.connect() as conn:
             conn.execute("BEGIN")
             review = conn.execute("SELECT id FROM reviews WHERE repository_id=? AND number=?",
@@ -154,33 +195,190 @@ class Ledger:
             if review is None:
                 raise LedgerError("scope_not_found", "PR is not present in this repository and profile")
             result = self._run_references(conn, scope, review["id"], limit=limit, offset=offset)
-            return {"state": "ok", "repository": repository, "pull_number": pull_number, **result}
+            output = {"state": "ok", "repository": repository, "pull_number": pull_number,
+                      "max_chars": max_chars, **result}
+            while len(canonical(output)) > max_chars and len(output["runs"]) > 1:
+                output["runs"].pop()
+                output["omitted"] = True
+                output["next_offset"] = offset + len(output["runs"])
+            return output
 
-    def status(self, repository: str, run_id: str, actor: Actor, *, limit=10, offset=0, history_offset=0) -> dict:
+    @staticmethod
+    def _findings(conn, scope: Scope, run_id: str, limit: int, offset: int) -> list[dict]:
+        """Read origin and reassessed claims through their run indexes."""
+        return [dict(row) for row in conn.execute("""
+            SELECT f.* FROM findings f WHERE f.repository_id=? AND f.origin_run_id=?
+            UNION
+            SELECT f.* FROM assessments a JOIN findings f
+                ON f.repository_id=a.repository_id AND f.id=a.finding_id
+                WHERE a.repository_id=? AND a.run_id=?
+            ORDER BY id LIMIT ? OFFSET ?
+            """, (scope.repository_id, run_id, scope.repository_id, run_id, limit, offset))]
+
+    @staticmethod
+    def _assessment_sources(conn, scope: Scope, assessment: dict) -> None:
+        assessment["sources"] = [dict(row) for row in conn.execute(
+            "SELECT observation_id,relation FROM assessment_sources "
+            "WHERE repository_id=? AND assessment_id=? ORDER BY observation_id",
+            (scope.repository_id, assessment["id"]))]
+
+    @staticmethod
+    def _status_reference(collection: str, item: dict) -> dict:
+        """Identify complete stored detail; never present a shortened claim as evidence."""
+        content = canonical(item)
+        retained = {
+            "run": ("id", "head_sha", "base_sha", "comparison", "status", "generation", "can_write"),
+            "observation": ("id", "kind", "outcome", "provenance", "valid"),
+            "assessment": ("id", "finding_id", "state", "freshness", "basis"),
+            "finding": ("id", "origin_run_id"),
+        }
+        result = {key: item[key] for key in retained[collection]}
+        result.update(detail_required=True, detail_collection=collection,
+                      content_chars=len(content), content_sha256=hashlib.sha256(content.encode()).hexdigest())
+        if collection != "run":
+            result["detail_id"] = item["id"]
+        return result
+
+    def status(self, repository: str, run_id: str, actor: Actor, *, limit=10, offset=0,
+               history_offset=0, max_chars=24_000) -> dict:
         scope = self.scope(repository)
         integer(limit, "limit", 1, 25)
         integer(offset, "offset", 0, 1_000_000)
         integer(history_offset, "history_offset", 0, 1_000_000)
+        integer(max_chars, "max_chars", 4000, 64_000)
         with self.store.connect() as conn:
             conn.execute("BEGIN")
             run = self.store.run(conn, scope, run_id)
             observations = [dict(r) for r in conn.execute("SELECT * FROM observations WHERE repository_id=? AND run_id=? ORDER BY id LIMIT ? OFFSET ?", (scope.repository_id, run_id, limit + 1, offset))]
             assessments = [dict(r) for r in conn.execute("""SELECT a.*,f.claim FROM assessments a JOIN findings f ON a.finding_id=f.id
                 WHERE a.repository_id=? AND a.run_id=? ORDER BY a.created_at,a.id LIMIT ? OFFSET ?""", (scope.repository_id, run_id, limit + 1, offset))]
-            findings = [dict(r) for r in conn.execute("""SELECT f.* FROM findings f WHERE f.repository_id=? AND
-                (f.origin_run_id=? OR EXISTS (SELECT 1 FROM assessments a WHERE a.finding_id=f.id AND a.run_id=?))
-                ORDER BY f.id LIMIT ? OFFSET ?""", (scope.repository_id, run_id, run_id, limit + 1, offset))]
+            findings = self._findings(conn, scope, run_id, limit + 1, offset)
             for obs in observations[:limit]:
                 if obs["artifact_id"]:
                     obs["artifact"] = self.store.artifact_status(obs["artifact_id"])
+            for assessment in assessments[:limit]:
+                self._assessment_sources(conn, scope, assessment)
             history = self._run_references(conn, scope, run["review_id"], limit=limit,
                                            offset=history_offset, exclude_id=run_id)
-            return {"state": "ok", "run": self._run_view(run, actor), "observations": observations[:limit],
+            output = {"state": "ok", "run": self._run_view(run, actor), "observations": observations[:limit],
                     "assessments": assessments[:limit], "findings": findings[:limit], "historical_runs": history["total_runs"],
                     "related_runs": history,
                     "omitted": {"observations": len(observations) > limit, "assessments": len(assessments) > limit, "findings": len(findings) > limit},
                     "next_offset": offset + limit if max(len(observations), len(assessments), len(findings)) > limit else None,
+                    "max_chars": max_chars,
+                    "detail_notice": "Items with detail_required are references, not complete evidence. "
+                                     "Use ledger_status detail_collection/detail_id with this run_id, "
+                                     "reassemble all pages with one digest and verify it before interpreting omitted fields.",
                     "provenance_notice": "Agent-reported records are not host-verified evidence."}
+            size = len(canonical(output))
+            if size <= max_chars:
+                return output
+
+            # Replace the largest payloads first, retaining complete smaller
+            # records whenever the complete response can still fit.
+            candidates = []
+            for key, collection in (("run", "run"), ("observations", "observation"),
+                                    ("assessments", "assessment"), ("findings", "finding")):
+                items = [output[key]] if key == "run" else output[key]
+                for index, item in enumerate(items):
+                    reference = self._status_reference(collection, item)
+                    saving = len(canonical(item)) - len(canonical(reference))
+                    if saving > 0:
+                        candidates.append((saving, key, index, reference))
+            for saving, key, index, reference in sorted(candidates, key=lambda candidate: candidate[0], reverse=True):
+                if key == "run":
+                    output[key] = reference
+                else:
+                    output[key][index] = reference
+                size -= saving
+                if size <= max_chars:
+                    return output
+
+            # Every returned row consumes one position even when it is a
+            # reference. Shrink prefixes with matching cursors; never skip the
+            # undisplayed tail of the originally requested window.
+            while len(canonical(output)) > max_chars and len(history["runs"]) > 1:
+                history["runs"].pop()
+                history["omitted"] = True
+                history["next_offset"] = history_offset + len(history["runs"])
+            count = limit
+            rows = {"observations": observations, "assessments": assessments, "findings": findings}
+            while len(canonical(output)) > max_chars and count > 1:
+                count -= 1
+                for key in rows:
+                    output[key] = output[key][:count]
+                    output["omitted"][key] = len(rows[key]) > count
+                output["next_offset"] = offset + count if any(output["omitted"].values()) else None
+            if len(canonical(output)) > max_chars:
+                raise LedgerError("status_budget_exceeded", "Status references exceed the character budget")
+            return output
+
+    def status_detail(self, repository: str, run_id: str, actor: Actor, *, detail_collection: str,
+                      detail_id: str | None = None, offset=0, max_chars=24_000) -> dict:
+        """Return complete, scoped record JSON in pages whose whole envelope fits."""
+        scope = self.scope(repository)
+        choice(detail_collection, "detail_collection", {"run", "observation", "assessment", "finding"})
+        integer(offset, "offset", 0, 1_000_000)
+        integer(max_chars, "max_chars", 4000, 64_000)
+        if detail_collection == "run":
+            if detail_id is not None:
+                raise LedgerError("invalid_input", "Run detail uses run_id without detail_id")
+        else:
+            text(detail_id, "detail_id", 64)
+        with self.store.connect() as conn:
+            conn.execute("BEGIN")
+            run = self.store.run(conn, scope, run_id)
+            if detail_collection == "run":
+                item = self._run_view(run, actor)
+            elif detail_collection == "observation":
+                row = conn.execute("SELECT * FROM observations WHERE repository_id=? AND run_id=? AND id=?",
+                                   (scope.repository_id, run_id, detail_id)).fetchone()
+                item = dict(row) if row is not None else None
+                if item is not None and item["artifact_id"]:
+                    item["artifact"] = self.store.artifact_status(item["artifact_id"])
+            elif detail_collection == "assessment":
+                row = conn.execute("SELECT a.*,f.claim FROM assessments a JOIN findings f ON a.finding_id=f.id "
+                                   "WHERE a.repository_id=? AND a.run_id=? AND a.id=?",
+                                   (scope.repository_id, run_id, detail_id)).fetchone()
+                item = dict(row) if row is not None else None
+                if item is not None:
+                    self._assessment_sources(conn, scope, item)
+            else:
+                row = conn.execute("SELECT f.* FROM findings f WHERE f.repository_id=? AND f.id=? AND "
+                                   "(f.origin_run_id=? OR EXISTS (SELECT 1 FROM assessments a "
+                                   "WHERE a.repository_id=? AND a.run_id=? AND a.finding_id=f.id))",
+                                   (scope.repository_id, detail_id, run_id, scope.repository_id, run_id)).fetchone()
+                item = dict(row) if row is not None else None
+            if item is None:
+                raise LedgerError("scope_not_found", "Detail record is not in this run, repository and profile")
+            content = canonical(item)
+            if offset >= len(content):
+                raise LedgerError("invalid_input", "Detail offset must refer to a character within the complete record JSON")
+            checksum = hashlib.sha256(content.encode()).hexdigest()
+
+            def page(length):
+                end = offset + length
+                result = {"state": "detail", "run_id": run_id, "detail_collection": detail_collection,
+                          "content_format": "canonical_json", "content": content[offset:end],
+                          "content_sha256": checksum, "total_chars": len(content), "offset": offset,
+                          "next_offset": end if end < len(content) else None,
+                          "complete": offset == 0 and end == len(content), "max_chars": max_chars,
+                          "notice": "Reassemble all pages with the same content_sha256 and verify the digest before "
+                                    "interpreting the record. Restart if the digest changes; detail is checked in scope on every page."}
+                if detail_collection != "run":
+                    result["detail_id"] = detail_id
+                return result
+
+            low, high = 0, min(len(content) - offset, max_chars)
+            while low < high:
+                length = (low + high + 1) // 2
+                if len(canonical(page(length))) <= max_chars:
+                    low = length
+                else:
+                    high = length - 1
+            if low == 0:
+                raise LedgerError("status_budget_exceeded", "Detail envelope exceeds the character budget")
+            return page(low)
 
     def run_action(self, repository: str, run_id: str, actor: Actor, generation: int,
                    action: str, request_key: str, note: str = "") -> dict:
@@ -225,7 +423,18 @@ class Ledger:
         artifact = None
         if action == "observation" and "artifact_text" in data:
             with self.store.connect() as conn:
-                self.store.owner(conn, scope, run_id, actor, generation)
+                receipt = self.store.receipt(conn, scope, "record", run_id, request_key, payload)
+                if receipt is not None:
+                    return receipt
+                try:
+                    self.store.owner(conn, scope, run_id, actor, generation)
+                except LedgerError:
+                    # Another exact request may have committed before an owner
+                    # change between the receipt read and this preflight check.
+                    receipt = self.store.receipt(conn, scope, "record", run_id, request_key, payload)
+                    if receipt is not None:
+                        return receipt
+                    raise
             artifact = self.store.put_artifact(data["artifact_text"])
 
         def write(conn):

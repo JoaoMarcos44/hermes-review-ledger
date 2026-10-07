@@ -308,6 +308,79 @@ assert rejected["error"]["code"] == "ownership_conflict", rejected
 accepted = model_dispatch("ledger_record", write, "session-a")
 assert accepted.get("observation_id"), accepted
 assert model_dispatch("ledger_status", query, "session-a")["observations"][0]["provenance"] == "agent_reported"
+large_data = {"kind": "inspection", "outcome": "inspection", "summary": "Synthetic large source",
+              "details": 'Í"\\\\\\n' * 2000, "limitations": "Synthetic only; no target execution"}
+large = model_dispatch("ledger_record", {
+    **write, "request_key": "large-record", "data": large_data}, "session-a")
+assert large.get("observation_id"), large
+bounded = model_dispatch("ledger_status", {**query, "max_chars": 4000}, "session-b")
+assert len(json.dumps(bounded, ensure_ascii=False, separators=(",", ":"))) <= 4000, bounded
+reference = next(row for row in bounded["observations"] if row["id"] == large["observation_id"])
+assert reference["detail_required"] and reference["detail_collection"] == "observation", reference
+import hashlib
+chunks, offset, checksum = [], 0, None
+while True:
+    detail = model_dispatch("ledger_status", {**query, "detail_collection": "observation",
+        "detail_id": large["observation_id"], "offset": offset, "max_chars": 4000}, "session-b")
+    assert detail["state"] == "detail", detail
+    assert len(json.dumps(detail, ensure_ascii=False, separators=(",", ":"))) <= 4000, detail
+    assert checksum in (None, detail["content_sha256"]), detail
+    checksum = detail["content_sha256"]
+    chunks.append(detail["content"])
+    offset = detail["next_offset"]
+    if offset is None:
+        break
+content = "".join(chunks)
+assert hashlib.sha256(content.encode()).hexdigest() == checksum == reference["content_sha256"]
+assert json.loads(content)["details"] == large_data["details"]
+assert bounded["run"]["can_write"] is False
+""")
+
+
+def test_real_scoped_github_credentials_and_unscoped_refusal(hermes_source, tmp_path):
+    _runtime(hermes_source, tmp_path, """
+from agent.secret_scope import (
+    get_secret, reset_secret_scope, set_multiplex_active, set_secret_scope)
+install_fixture(HOME)
+manager, loaded = load_fixture()
+calls = offline_github(loaded)
+os.environ.pop("REVIEW_LEDGER_GITHUB_TOKEN", None)
+github = importlib.import_module(loaded.module.__name__ + ".review_ledger.github")
+fixture_transport = github._default_transport
+def scoped_transport(**kwargs):
+    assert kwargs["headers"]["Authorization"] == "Bearer synthetic-profile-only"
+    return fixture_transport(**kwargs)
+github._default_transport = scoped_transport
+query = {"repository": "Example/project", "pull_number": 42}
+set_multiplex_active(True)
+try:
+    scope_token = set_secret_scope(
+        {"REVIEW_LEDGER_GITHUB_TOKEN": "synthetic-profile-only"}, profile_home=str(HOME))
+    try:
+        assert get_secret("REVIEW_LEDGER_GITHUB_TOKEN") == "synthetic-profile-only"
+        opened = model_dispatch("ledger_open", {**query, "request_key": "scoped-open"}, "session-a")
+        assert opened["state"] == "created", opened
+        assert opened["run"]["owner_session"] == "session-a", opened
+        assert len(calls) == 3, calls
+    finally:
+        reset_secret_scope(scope_token)
+    os.environ["REVIEW_LEDGER_GITHUB_TOKEN"] = "synthetic-process-placeholder"
+    unscoped_token = set_secret_scope(None)
+    try:
+        denied = model_dispatch("ledger_open", {**query, "request_key": "unscoped-open"}, "session-a")
+        assert denied["error"]["code"] == "secret_scope_required", denied
+        assert len(calls) == 3, calls
+    finally:
+        reset_secret_scope(unscoped_token)
+    empty_token = set_secret_scope({}, profile_home=str(HOME))
+    try:
+        missing = model_dispatch("ledger_open", {**query, "request_key": "missing-scoped-open"}, "session-a")
+        assert missing["error"]["code"] == "missing_token", missing
+        assert len(calls) == 3, calls
+    finally:
+        reset_secret_scope(empty_token)
+finally:
+    set_multiplex_active(False)
 """)
 
 
