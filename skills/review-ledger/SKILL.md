@@ -49,6 +49,53 @@ The application assigns every observation `agent_reported`. Never represent sche
 
 Freshness (`current`, `needs_revalidation`, `historical`) is separate from assessment. A new HEAD, base, comparison configuration, or skill hash creates a different run and never carries old assessments forward as current.
 
+## Evidence-based criticism
+
+When a review includes a second analysis, first state the contract and its source,
+fault assumptions, permitted inputs, and bounded question. For distributed-system
+behavior, distinguish safety from progress and respect the promised consistency
+model. A stale read or finite wait alone need not violate that contract.
+
+Preserve independent claims before sharing conclusions. Ask a critic to identify
+a specific mistaken assumption, missing evidence, or discriminating check; it may
+agree or remain inconclusive. Model identity, majority agreement, forceful prose,
+and self-scores are not evidence. Record claims and references, not private
+reasoning transcripts. A critic's proposed correction requires its own checks.
+
+Record an untested critique as a note with `outcome="incomplete"`; keep any
+assessment inconclusive with `basis="none"` until appropriate evidence exists.
+Store contract/participant/check context in existing text fields, not invented
+tool arguments. Actual inspection remains inspection; behavioral reports need
+details and environment and still have `agent_reported` provenance. A failed or
+blocked attempt to reproduce does not automatically invalidate an earlier source.
+Keep one run owner and the operator approval boundary. No additional model calls,
+external data sharing, automatic scoring, or autonomous execution are authorized
+by this workflow. A separate manual pilot can compare critique benefit/harm and
+later held-out lesson usefulness; this plugin does not establish those gains.
+
+## When a PR is already superseded by its base
+
+Read relevant run history and complete evidence before repeating work, then use
+a fresh authorized snapshot to establish applicability. `latest_recorded` is not
+a freshness guarantee. Check whether the base satisfies the intended contract and
+whether any justified residual change remains. Record exact revisions, comparison,
+limitations, and distinguish an untouched diff from an integration result produced
+after local edits. Empty diff or passing CI alone is not behavioral proof.
+
+Record an evidenced PR-obsolescence conclusion as an observation and completion
+note. Internal run `status="superseded"` means a snapshot was replaced, not that
+the PR should close. Do not invent a new state/action, force an empty commit, or
+treat completion as authorization to publish, close, or merge. Pause if evidence
+is missing. A completed run is still readable; another open can create a new run
+even at the same snapshot. It is not a permanent skip flag or a zero-cost promise.
+
+Changed HEAD/base/configuration/skill or new contradictory evidence needs renewed
+evaluation. Old assessments are not current support. A lesson can preserve the
+conditional question “Does the base already satisfy this contract?”; proposing it
+does not approve it, and recall is not retrieval of every completed run. Respect
+the full exact-version applicability and result workflow below. Obsolete code
+does not by itself invalidate the historical evidence explaining its obsolescence.
+
 ## Conditional learning
 
 1. Propose a strategy only from eligible, scoped observations. `ledger_lesson(action="propose")` data: `question`, `conditions` (nonempty list), `exclusions` (list), `verification`, `sources` (list of `{observation_id, relation}` where relation is `supports` or `contradicts`), and optional `tags`/`symbols` lists. Proposals always start as candidates.
