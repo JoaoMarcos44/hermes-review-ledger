@@ -15,8 +15,8 @@ from uuid import uuid4
 
 from .models import Actor, IDENTIFIER, LedgerError, Scope, canonical, digest, integer, text
 
-SCHEMA_VERSION = 2
-MIGRATIONS = ("001_initial.sql", "002_query_indexes.sql")
+SCHEMA_VERSION = 3
+MIGRATIONS = ("001_initial.sql", "002_query_indexes.sql", "003_adaptive_context.sql")
 LEDGER_TABLES = frozenset({
     "ledger_meta", "repositories", "reviews", "runs", "observations", "findings",
     "assessments", "assessment_sources", "lesson_versions", "lesson_sources",
@@ -141,6 +141,11 @@ class Store:
         tables = {row[0] for row in objects if row[1] == "table"}
         if version < 0 or not LEDGER_TABLES.issubset(tables):
             raise LedgerError("unknown_schema", "Versioned database does not have the ledger schema")
+        if version >= 3:
+            required = {"context_manifests", "optional_skill_versions", "optional_skill_resources", "improvement_proposals", "improvement_outcomes", "improvement_aggregates", "usage_events"}
+            lineage = conn.execute("SELECT value FROM ledger_meta WHERE key='schema_lineage'").fetchone()
+            if not required.issubset(tables) or not lineage or lineage[0] != "adaptive-v15":
+                raise LedgerError("schema_lineage_conflict", "Schema 3 belongs to an incompatible experimental branch; no migration was attempted")
         stored = conn.execute("SELECT value FROM ledger_meta WHERE key='profile_key'").fetchone()
         if not stored or stored[0] != self.profile_key:
             raise LedgerError("profile_mismatch", "This database belongs to a different resolved profile")
@@ -307,6 +312,12 @@ class Store:
             # sqlite3's own context manager commits/rolls back, but never closes.
             # Close both temporary databases before native cleanup or publication.
             with self.connect() as source, closing(sqlite3.connect(temporary)) as destination:
+                # Imported instruction resources are canonical immutable SQLite
+                # rows, so the same atomic backup includes their approved bytes.
+                # Refuse to publish a backup with missing or corrupt resources.
+                from .skills import Skills
+                for row in source.execute("SELECT s.id,s.repository_id,r.name FROM optional_skill_versions s JOIN repositories r ON r.id=s.repository_id"):
+                    Skills.version(source, Scope(row["repository_id"], row["name"]), row["id"])
                 deadline = time.monotonic() + 10
                 def progress(status, remaining, total):
                     if time.monotonic() > deadline:
@@ -332,7 +343,7 @@ class Store:
             final = directory / f"{ident}.sqlite3"
             os.replace(temporary, final)
             return {"state": "backed_up", "path": str(final), "restore_verified": True,
-                    "includes": "SQLite ledger only; optional artifacts are not bundled"}
+                    "includes": "SQLite ledger including immutable imported skill resources; observation filesystem artifacts are not bundled"}
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
