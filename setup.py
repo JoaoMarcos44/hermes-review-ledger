@@ -17,6 +17,7 @@ class BuildPlugin(build_py):
         names += [p.relative_to(root) for p in (root / "review_ledger").glob("*.py")]
         names += [p.relative_to(root) for p in (root / "review_ledger" / "migrations").glob("*.sql")]
         names += [p.relative_to(root) for p in (root / "skills").rglob("*.md")]
+        names += [p.relative_to(root) for p in (root / "review_ledger" / "resources").glob("*.md")]
         for name in names:
             target = destination / name
             target.parent.mkdir(parents=True, exist_ok=True)

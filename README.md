@@ -1,4 +1,12 @@
-# Hermes Review Ledger 0.1.0
+# Hermes Review Ledger 0.3.0
+
+
+
+ 
+
+
+
+**V1.5 pilot:** [installation, exact defaults, operator/agent workflow, version mapping, limitations and evaluation](docs/v15-pilot.md). The original workflow remains available with pilot features disabled.
 
 A small native Hermes plugin for persistent, profile-local GitHub PR investigations and operator-approved conditional investigation lessons.
 
@@ -50,8 +58,8 @@ The same command works with a quoted Windows path, for example:
 py -3.14 -m review_ledger install --profile-dir "C:\Users\YourName\Hermes Profiles\reviews"
 ```
 
-This source-checkout installation is offline and uses only the Python standard
-library. Python 3.12–3.14 can run the installer; the pinned Hermes runtime used by
+This source-checkout installation is offline and uses the Python standard
+library for installation; optional skill registration requires packaged PyYAML. Python 3.12–3.14 can run the installer; the pinned Hermes runtime used by
 this project's integration tests itself requires Python 3.14.
 
 ### Install the Python command with pip
@@ -175,7 +183,7 @@ There are three separate steps: installing its files, enabling discovery in a
 chosen Hermes profile, and invoking a tool for an authorized review. Merely copying
 this directory or loading its skill does not start a review.
 
-- Hermes discovery calls the root `register(ctx)`, which registers seven tools,
+- Hermes discovery calls the root `register(ctx)`, which registers eight tools (the context operation is disabled by default),
   one skill, and the operator CLI. Registration opens no database, reads no GitHub
   token, performs no HTTP requests, and starts no background task.
 - `ledger_open` is the only network-facing tool. After trusted-session and
