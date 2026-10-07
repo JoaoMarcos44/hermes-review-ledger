@@ -10,23 +10,41 @@ import tempfile
 import time
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Callable
 from uuid import uuid4
 
 from .models import Actor, IDENTIFIER, LedgerError, Scope, canonical, digest, integer, text
 
-SCHEMA_VERSION = 3
-MIGRATIONS = ("001_initial.sql", "002_query_indexes.sql", "003_critic.sql")
-LEDGER_TABLES = frozenset({
+SCHEMA_VERSION = 4
+MIGRATIONS = ("001_initial.sql", "002_query_indexes.sql", "003_adaptive_context.sql", "004_critic.sql")
+V2_TABLES = frozenset({
     "ledger_meta", "repositories", "reviews", "runs", "observations", "findings",
     "assessments", "assessment_sources", "lesson_versions", "lesson_sources",
     "lesson_uses", "audit_events", "idempotency",
 })
-V2_TABLES = LEDGER_TABLES
-CRITIC_TABLES = frozenset({"critic_runs", "critic_findings", "critic_sources",
-    "critic_input_assessments", "critic_items", "critic_objections", "critic_assessments",
-    "critic_assessment_sources", "critic_lesson_links"})
-LEDGER_TABLES = V2_TABLES | CRITIC_TABLES
+ADAPTIVE_TABLES = frozenset({
+    "context_manifests", "optional_skill_versions", "optional_skill_resources",
+    "improvement_proposals", "improvement_outcomes", "improvement_aggregates", "usage_events",
+})
+V15_TABLES = V2_TABLES | ADAPTIVE_TABLES
+CRITIC_TABLES = frozenset({
+    "critic_runs", "critic_findings", "critic_sources", "critic_input_assessments",
+    "critic_items", "critic_objections", "critic_assessments",
+    "critic_assessment_sources", "critic_lesson_links",
+})
+LEDGER_TABLES = V15_TABLES | CRITIC_TABLES
+SCHEMA_TABLES = {1: V2_TABLES, 2: V2_TABLES, 3: V15_TABLES, 4: LEDGER_TABLES}
+EXPERIMENTAL_CRITIC_MIGRATION = (
+    "Experimental critic schema 3 cannot be upgraded automatically. Stop all ledger "
+    "sessions and back up this database with the matching experimental critic build. "
+    "Preserve that backup and its artifacts separately. Restore a verified pre-critic "
+    "schema-2 backup at its original resolved profile data path, then open it with "
+    "this release. This restores only the older snapshot; later records and critic "
+    "history remain in the experimental backup. If no pre-critic backup exists, "
+    "retain the experimental build until an explicit offline converter is available. "
+    "Do not edit PRAGMA user_version or schema_lineage. No changes made."
+)
 MAX_ARTIFACT_BYTES = 64 * 1024
 MIN_SQLITE_VERSION = (3, 35, 0)
 DEFAULT_JOURNAL_MODE = "delete"
@@ -57,6 +75,23 @@ def now() -> str:
 
 def new_id(kind: str) -> str:
     return f"{kind}_{uuid4().hex}"
+
+
+def _table_layout(conn, table):
+    """Compare versioned columns and scoped foreign keys, not only table names."""
+    return (
+        tuple(tuple(row) for row in conn.execute(f'PRAGMA table_info("{table}")')),
+        tuple(sorted(tuple(row) for row in conn.execute(f'PRAGMA foreign_key_list("{table}")'))),
+    )
+
+
+@lru_cache(maxsize=4)
+def _expected_layout(version):
+    """Derive historical layouts from the unchanged, packaged migration chain."""
+    with closing(sqlite3.connect(":memory:")) as reference:
+        for name in MIGRATIONS[:version]:
+            reference.executescript((Path(__file__).parent / "migrations" / name).read_text(encoding="utf-8"))
+        return {table: _table_layout(reference, table) for table in SCHEMA_TABLES[version]}
 
 
 class Store:
@@ -134,7 +169,20 @@ class Store:
             conn.close()
 
     def _checked_version(self, conn):
-        """Read the schema/profile fences before any migration or journal change."""
+        """Read all schema/profile fences from one consistent SQLite snapshot."""
+        # Without a read transaction a concurrent upgrade can commit between
+        # user_version and sqlite_master, producing a mixed-version false refusal.
+        owns_snapshot = not conn.in_transaction
+        if owns_snapshot:
+            conn.execute("BEGIN")
+        try:
+            return self._schema_version(conn)
+        finally:
+            if owns_snapshot:
+                conn.rollback()
+
+    def _schema_version(self, conn):
+        """Validate a known lineage before any migration or journal change."""
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         if version > SCHEMA_VERSION:
             raise LedgerError("schema_too_new", "Database schema is newer than this plugin; no changes made")
@@ -144,12 +192,27 @@ class Store:
                 raise LedgerError("unknown_schema", "Unversioned nonempty database is not a ledger")
             return version
         tables = {row[0] for row in objects if row[1] == "table"}
-        required_tables = LEDGER_TABLES if version >= 3 else V2_TABLES
-        if version < 0 or not required_tables.issubset(tables):
+        if version not in SCHEMA_TABLES or not V2_TABLES.issubset(tables):
             raise LedgerError("unknown_schema", "Versioned database does not have the ledger schema")
+        # Check the base metadata layout before querying its ownership fence.
+        if _table_layout(conn, "ledger_meta") != _expected_layout(version)["ledger_meta"]:
+            raise LedgerError("unknown_schema", "Ledger metadata does not match the declared schema; no changes made")
         stored = conn.execute("SELECT value FROM ledger_meta WHERE key='profile_key'").fetchone()
         if not stored or stored[0] != self.profile_key:
             raise LedgerError("profile_mismatch", "This database belongs to a different resolved profile")
+        lineage = conn.execute("SELECT value FROM ledger_meta WHERE key='schema_lineage'").fetchone()
+        if version < 4 and CRITIC_TABLES.intersection(tables):
+            raise LedgerError("schema_lineage_conflict", EXPERIMENTAL_CRITIC_MIGRATION)
+        if version >= 3:
+            if not V15_TABLES.issubset(tables) or not lineage or lineage[0] != "adaptive-v15":
+                raise LedgerError("schema_lineage_conflict", "Schema does not match the adaptive-v15 lineage; no migration was attempted")
+        elif lineage or ADAPTIVE_TABLES.intersection(tables):
+            raise LedgerError("schema_lineage_conflict", "Schema version does not match its recorded lineage; no migration was attempted")
+        if not SCHEMA_TABLES[version].issubset(tables):
+            raise LedgerError("unknown_schema", "Versioned database is missing required ledger tables; no changes made")
+        for table, expected in _expected_layout(version).items():
+            if _table_layout(conn, table) != expected:
+                raise LedgerError("unknown_schema", f"Table {table} does not match ledger schema {version}; no changes made")
         return version
 
     @staticmethod
@@ -313,6 +376,12 @@ class Store:
             # sqlite3's own context manager commits/rolls back, but never closes.
             # Close both temporary databases before native cleanup or publication.
             with self.connect() as source, closing(sqlite3.connect(temporary)) as destination:
+                # Imported instruction resources are canonical immutable SQLite
+                # rows, so the same atomic backup includes their approved bytes.
+                # Refuse to publish a backup with missing or corrupt resources.
+                from .skills import Skills
+                for row in source.execute("SELECT s.id,s.repository_id,r.name FROM optional_skill_versions s JOIN repositories r ON r.id=s.repository_id"):
+                    Skills.version(source, Scope(row["repository_id"], row["name"]), row["id"])
                 deadline = time.monotonic() + 10
                 def progress(status, remaining, total):
                     if time.monotonic() > deadline:
@@ -331,14 +400,14 @@ class Store:
                 with closing(sqlite3.connect(restored)) as check:
                     if check.execute("PRAGMA integrity_check").fetchone()[0] != "ok" or check.execute("PRAGMA foreign_key_check").fetchone():
                         raise LedgerError("backup_invalid", "Restored backup failed consistency checks")
-                    if check.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+                    if self._checked_version(check) != SCHEMA_VERSION:
                         raise LedgerError("backup_invalid", "Restored backup has the wrong schema")
                     if check.execute("PRAGMA journal_mode").fetchone()[0].lower() != DEFAULT_JOURNAL_MODE:
                         raise LedgerError("backup_invalid", "Restored backup has the wrong journal mode")
             final = directory / f"{ident}.sqlite3"
             os.replace(temporary, final)
             return {"state": "backed_up", "path": str(final), "restore_verified": True,
-                    "includes": "SQLite ledger only; optional artifacts are not bundled"}
+                    "includes": "SQLite ledger including immutable imported skill resources; observation filesystem artifacts are not bundled"}
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)

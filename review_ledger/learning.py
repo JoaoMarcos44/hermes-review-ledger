@@ -33,8 +33,9 @@ def _decode_version(row) -> dict:
 
 
 class Learning:
-    def __init__(self, store: Store):
+    def __init__(self, store: Store, *, improvements_enabled: bool = False):
         self.store = store
+        self.improvements_enabled = improvements_enabled
 
     @staticmethod
     def critic_links_eligible(conn, scope: Scope, assessment_ids, source_ids, run_id=None) -> bool:
@@ -93,7 +94,7 @@ class Learning:
                                 and item["critic_links_eligible"])
         return item
 
-    def propose(self, scope: Scope, run_id: str, actor: Actor, generation: int, data: dict, request_key: str):
+    def propose(self, scope: Scope, run_id: str, actor: Actor, generation: int, data: dict, request_key: str, *, _conn=None):
         fields(data, {"question", "conditions", "exclusions", "verification", "tags", "symbols", "sources", "previous_version_id", "critic_assessment_ids"},
                {"question", "conditions", "exclusions", "verification", "sources"})
         question = text(data["question"], "question", 1500)
@@ -119,15 +120,21 @@ class Learning:
 
         def write(conn):
             self.store.owner(conn, scope, run_id, actor, generation)
-            if not self.critic_links_eligible(conn, scope, critic_ids, {s[0] for s in sources}, run_id):
-                raise LedgerError("ineligible_source", "Critic provenance requires a current supported/refuted assessment from this run and all its verification observations")
+            previous = data.get("previous_version_id")
+            old = self.version(conn, scope, previous) if previous else None
+            # Exact inherited provenance may originate in an earlier review run.
+            # New links still require this run; neither route relaxes freshness,
+            # repository scoping, or the complete verification-source fence.
+            inherited = set(old["critic_assessment_ids"]) & set(critic_ids) if old else set()
+            source_ids = {s[0] for s in sources}
+            if (not self.critic_links_eligible(conn, scope, inherited, source_ids)
+                    or not self.critic_links_eligible(conn, scope, set(critic_ids) - inherited, source_ids, run_id)):
+                raise LedgerError("ineligible_source", "Critic provenance requires current supported/refuted assessments and all their verification observations; new links must belong to this run")
             for ident, _ in sources:
                 obs = conn.execute("SELECT valid,outcome FROM observations WHERE repository_id=? AND id=?", (scope.repository_id, ident)).fetchone()
                 if obs is None or not obs["valid"] or obs["outcome"] not in ELIGIBLE_OUTCOMES:
                     raise LedgerError("ineligible_source", "Lesson sources must be eligible observations in this repository")
-            previous = data.get("previous_version_id")
-            if previous:
-                old = self.version(conn, scope, previous)
+            if old:
                 lesson_id = old["lesson_id"]
                 version = conn.execute("SELECT MAX(version)+1 FROM lesson_versions WHERE lesson_id=?", (lesson_id,)).fetchone()[0]
             else:
@@ -144,6 +151,8 @@ class Learning:
             self.store.audit(conn, scope, ident, "proposed", actor.session_id, {"run_id": run_id})
             return {"state": "candidate", "lesson_id": lesson_id, "version_id": ident, "version": version,
                     "approval_required": "Separate local operator CLI operation"}
+        if _conn is not None:
+            return write(_conn)
         return self.store.write(scope, "lesson_propose", run_id, request_key,
                                 {"actor": actor.session_id, "generation": generation, "data": data}, write)
 
@@ -155,6 +164,8 @@ class Learning:
         def write(conn):
             lesson = self.version(conn, scope, version_id)
             if action == "approve":
+                from .improvements import Improvements
+                Improvements.validate_approval(conn, scope, version_id)
                 if lesson["state"] != "candidate":
                     raise LedgerError("invalid_transition", "Only a new candidate version can be approved; revise suspended knowledge first")
                 if not lesson["critic_links_eligible"] or not lesson["sources"] or any(not s["valid"] or s["outcome"] not in ELIGIBLE_OUTCOMES for s in lesson["sources"]):
@@ -167,6 +178,8 @@ class Learning:
                 conn.execute("UPDATE lesson_versions SET state='active',approved_at=?,reason=? WHERE id=?", (now(), reason, version_id))
             else:
                 conn.execute("UPDATE lesson_versions SET state=?,reason=? WHERE id=?", (target_state, reason, version_id))
+            from .improvements import Improvements
+            Improvements.record_operator(conn, scope, version_id, action)
             self.store.audit(conn, scope, version_id, action, "local_operator", {"reason": reason})
             return {"state": target_state,
                     "version_id": version_id, "reason": reason}
@@ -327,12 +340,18 @@ class Learning:
 
     def result(self, scope: Scope, run_id: str, actor: Actor, generation: int,
                use_id: str, data: dict, request_key: str):
-        fields(data, {"usefulness", "behavioral_result", "execution_block", "explanation"},
+        fields(data, {"usefulness", "behavioral_result", "execution_block", "explanation",
+                      "contribution", "feedback_applicability", "supporting_observation_ids"},
                {"usefulness", "behavioral_result", "execution_block", "explanation"})
         usefulness = choice(data["usefulness"], "usefulness", {"useful", "not_useful", "inconclusive"})
         behavior = choice(data["behavioral_result"], "behavioral_result", {"failure_observed", "hypothesis_refuted", "no_failure_observed", "inconclusive", "not_tested"})
         blocked = choice(data["execution_block"], "execution_block", {"none", "infrastructure", "timeout", "skipped", "budget", "missing_evidence"})
         explanation = text(data["explanation"], "explanation", 4000)
+        contribution = choice(data.get("contribution", "unknown"), "contribution", {"useful", "redundant", "unknown"})
+        applicability = choice(data.get("feedback_applicability", "unknown"), "feedback_applicability", {"applicable", "inapplicable", "unknown"})
+        support = strings(data.get("supporting_observation_ids", []), "supporting_observation_ids", 20, 64)
+        if len(support) != len(data.get("supporting_observation_ids", [])):
+            raise LedgerError("invalid_input", "Duplicate supporting observations are not allowed")
         if blocked != "none" and behavior not in ("inconclusive", "not_tested"):
             raise LedgerError("invalid_outcome", "Blocked execution cannot establish a behavioral result")
         def write(conn):
@@ -344,9 +363,21 @@ class Learning:
                 raise LedgerError("invalid_outcome", "A nonapplicable strategy cannot have a tested behavioral result")
             if use["usefulness"] is not None:
                 raise LedgerError("result_exists", "Results are immutable; a retry must use the original request key")
+            for observation_id in support:
+                observation = conn.execute("SELECT valid FROM observations WHERE repository_id=? AND run_id=? AND id=?",
+                                           (scope.repository_id, run_id, observation_id)).fetchone()
+                if observation is None or not observation["valid"]:
+                    raise LedgerError("ineligible_source", "Supporting observations must be valid records in this run")
+            conn.execute("UPDATE lesson_uses SET contribution=?,feedback_applicability=?,supporting_observation_ids_json=? WHERE id=?",
+                         (contribution, applicability, canonical(support), use_id))
             conn.execute("UPDATE lesson_uses SET usefulness=?,behavioral_result=?,execution_block=?,result_explanation=?,updated_at=? WHERE id=?",
                          (usefulness, behavior, blocked, explanation, now(), use_id))
+            improvement = None
+            if self.improvements_enabled:
+                from .improvements import Improvements
+                improvement = Improvements.record_outcome(conn, scope, run_id, use_id)
             return {"state": "recorded", "use_id": use_id, "version_id": use["version_id"],
+                    "improvement_id": improvement,
                     "eligible_now": self.eligible(conn, scope, use["version_id"]),
                     "notice": "Outcome is agent-reported; a useful refutation is not an execution failure."}
         return self.store.write(scope, "lesson_result", run_id, request_key,

@@ -1,5 +1,5 @@
 name: review-ledger
-version: 0.2.0
+version: 0.4.0
 description: Profile-local review investigations and explicitly approved lessons
 provides_tools:
   - ledger_open
@@ -9,6 +9,7 @@ provides_tools:
   - ledger_recall
   - ledger_lesson
   - ledger_export
+  - ledger_context
   - ledger_critic
 config_schema:
   authorized_repositories:
@@ -23,6 +24,27 @@ config_schema:
     type: int
     default: 6000
     description: Maximum serialized characters of recalled lesson context (500 to 20000)
+  context_enabled:
+    type: bool
+    default: false
+    description: Opt in to the bounded context pilot and eighth model tool
+  optional_skills_enabled:
+    type: bool
+    default: false
+    description: Allow context to load operator-approved local instruction snapshots
+  improvements_enabled:
+    type: bool
+    default: false
+    description: Enable outcome diagnostics and explicit improvement proposals
+  usage_enabled:
+    type: bool
+    default: false
+    description: Measure plugin-boundary request and rendered response sizes locally
+  bundle_budget:
+    type: int
+    default: 12000
+    description: Full serialized context response character cap from 2000 to 64000
+
   critic_enabled:
     type: bool
     default: false
