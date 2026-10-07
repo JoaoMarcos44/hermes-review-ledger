@@ -114,7 +114,8 @@ class Improvements:
         target = Improvements._validate(conn, scope, proposal)
         candidate = Learning.version(conn, scope, version_id)
         changes = json.loads(proposal["changes_json"])
-        if candidate["previous_id"] != target["id"] or candidate["question"] != target["question"]:
+        if (candidate["previous_id"] != target["id"] or candidate["question"] != target["question"]
+                or candidate["critic_assessment_ids"] != target["critic_assessment_ids"]):
             raise LedgerError("stale_improvement", "Candidate does not match the exact approved proposal")
         for field in CHANGE_FIELDS:
             expected = changes[field]["after"] if field in changes else target[field]
@@ -164,6 +165,9 @@ class Improvements:
             lesson_data = {key: target[key] for key in ("question", *CHANGE_FIELDS)}
             lesson_data.update(changes)
             lesson_data["previous_version_id"] = target_id
+            # A procedural revision must retain the exact adjudications whose
+            # freshness gates the target, including across review-run reuse.
+            lesson_data["critic_assessment_ids"] = target["critic_assessment_ids"]
             lesson_data["sources"] = [{"observation_id": ident, "relation": relation} for ident, relation in sorted(supports.items())]
             # Reuse all existing lesson validation and candidate lifecycle inside
             # this writer transaction; only the outer operation writes a receipt.

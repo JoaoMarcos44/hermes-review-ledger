@@ -19,7 +19,7 @@ from .storage import Store, now
 T = TypeVar("T")
 TOOLS = frozenset({"ledger_open", "ledger_recall", "ledger_record", "ledger_assess",
                    "ledger_lesson", "ledger_export", "ledger_control", "ledger_context",
-                   "ledger_status", "ledger_resume", "ledger_run", "ledger_observe"})
+                   "ledger_status", "ledger_resume", "ledger_run", "ledger_observe", "ledger_critic"})
 
 
 def metric(value, unit, *, coverage="plugin_boundary", source="local_counter", quality="measured"):

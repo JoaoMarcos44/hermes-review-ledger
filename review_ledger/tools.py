@@ -117,6 +117,8 @@ def handle(ctx, name: str, arguments: dict, **kwargs) -> str:
                     limit=args.get("limit", 5), offset=args.get("offset", 0),
                     result_offset=args.get("result_offset", 0), context_budget=budget,
                 )
+        elif name == "ledger_critic":
+            result = _critic_action(ctx, ledger, repository, actor, args)
         elif name == "ledger_context":
             if not getattr(ledger, "pilot", {}).get("context_enabled", False):
                 raise LedgerError("feature_disabled", "Operator must enable context_enabled for the pilot")
@@ -210,6 +212,43 @@ def _open_review(ctx, ledger: Ledger, repository: str, actor: Actor, args: dict)
     return result
 
 
+
+def _critic_action(ctx, ledger: Ledger, repository: str, actor: Actor, args: dict) -> dict:
+    """Validate the exact action before constructing optional inference surfaces."""
+    action = args["action"]
+    if action not in CRITIC_ACTION_SCHEMAS:
+        raise LedgerError("invalid_input", "Unknown critic action")
+    selected = CRITIC_ACTION_SCHEMAS[action]
+    fields(args, set(selected["properties"]), set(selected["required"]))
+    from .critic import Critic, CriticConfig
+    config = CriticConfig.from_context(ctx)
+    if action == "status":
+        return Critic(ledger, config).status(
+            repository, args["run_id"], critic_run_id=args.get("critic_run_id"),
+            offset=args.get("offset", 0), max_chars=args.get("max_chars", 24_000),
+        )
+    common = (repository, args["run_id"], actor, args["generation"], args["request_key"])
+    if action == "prepare":
+        return Critic(ledger, config).prepare(
+            *common, finding_ids=args["finding_ids"],
+            observation_ids=args.get("observation_ids", []),
+            assessment_ids=args.get("assessment_ids", []),
+        )
+    if action == "run":
+        # Disabled mode must not even construct a host provider or access ctx.llm.
+        if not config.enabled:
+            raise LedgerError("critic_disabled", "The optional critic is disabled")
+        from .critic_hermes import HermesCriticProvider
+        return Critic(ledger, config, provider=HermesCriticProvider(ctx, config)).run(
+            *common, critic_run_id=args["critic_run_id"],
+        )
+    return Critic(ledger, config).assess(
+        *common, critic_run_id=args["critic_run_id"], objection_id=args["objection_id"],
+        state=args["state"], basis=args["basis"], rationale=args["rationale"],
+        limitations=args["limitations"], observation_ids=args["observation_ids"],
+    )
+
+
 def _record_lesson(ledger: Ledger, repository: str, actor: Actor, args: dict) -> dict:
     learning = Learning(ledger.store, improvements_enabled=getattr(ledger, "pilot", {}).get("improvements_enabled", False))
     scope = ledger.scope(repository)
@@ -272,7 +311,36 @@ SCHEMAS = {
 }
 
 
-TOOL_NAMES = tuple(SCHEMAS)
+_CRITIC_COMMON = {**BASE, "action": {"type": "string", "enum": ["prepare", "run", "status", "assess"]}}
+_IDS = {"type": "array", "items": S, "uniqueItems": True}
+CRITIC_ACTION_SCHEMAS = {}
+for _action, _properties, _required in (
+    ("prepare", {**WRITE, "finding_ids": {**_IDS, "minItems": 1, "maxItems": 3},
+                 "observation_ids": _IDS, "assessment_ids": _IDS},
+     [*WRITE, "finding_ids"]),
+    ("run", {**WRITE, "critic_run_id": S}, [*WRITE, "critic_run_id"]),
+    ("status", {**BASE, "critic_run_id": S, "offset": I, "max_chars": I}, [*BASE]),
+    ("assess", {**WRITE, "critic_run_id": S, "objection_id": S,
+                "state": {"type": "string", "enum": ["pending", "supported", "refuted", "inconclusive", "not_applicable"]},
+                "basis": {"type": "string", "enum": ["inspection", "behavior", "none"]},
+                "rationale": S, "limitations": S, "observation_ids": _IDS},
+     [*WRITE, "critic_run_id", "objection_id", "state", "basis", "rationale", "limitations", "observation_ids"]),
+):
+    CRITIC_ACTION_SCHEMAS[_action] = {
+        "type": "object", "properties": {**_properties, "action": {"type": "string", "enum": [_action]}},
+        "required": [*_required, "action"], "additionalProperties": False,
+    }
+_critic_properties = dict(_CRITIC_COMMON)
+for _action_schema in CRITIC_ACTION_SCHEMAS.values():
+    _critic_properties.update({key: value for key, value in _action_schema["properties"].items() if key != "action"})
+SCHEMAS["ledger_critic"] = schema(
+    "ledger_critic",
+    "Explicit optional claim criticism. prepare freezes selected ledger IDs without inference; run needs operator-configured consent and an authorized route; status reads bounded pages; assess records checks of objections. Opinions never confirm findings. No free-form prompt or route overrides.",
+    _critic_properties, [*BASE, "action"],
+)
+SCHEMAS["ledger_critic"]["parameters"]["oneOf"] = list(CRITIC_ACTION_SCHEMAS.values())
+
+
 SCHEMAS["ledger_context"] = schema("ledger_context", "Prepare bounded complete guidance, resume exact selections, or read semantic detail. Read-only views grant no ownership. Cap includes the entire JSON response.",
     {**BASE, "action": {"type": "string", "enum": ["prepare", "resume", "detail"]},
      "query": S, "phase": S, "tags": {"type": "array", "items": S}, "symbols": {"type": "array", "items": S},
@@ -280,11 +348,13 @@ SCHEMAS["ledger_context"] = schema("ledger_context", "Prepare bounded complete g
      "manifest_id": S, "kind": S, "record_id": S, "section": S}, ["repository", "run_id", "action"])
 
 
+TOOL_NAMES = tuple(SCHEMAS)
+
+
 def register(ctx):
     """Only register supported surfaces. No database, network, installs, or background work."""
     from .operator import configure_parser, dispatch
-    names = (*TOOL_NAMES, "ledger_context")
-    for name in names:
+    for name in TOOL_NAMES:
         def handler(args, _name=name, **kwargs):
             return handle(ctx, _name, args, **kwargs)
         ctx.register_tool(name=name, toolset="review_ledger", schema=SCHEMAS[name], handler=handler)

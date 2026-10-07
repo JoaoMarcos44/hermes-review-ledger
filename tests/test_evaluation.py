@@ -7,12 +7,26 @@ from review_ledger.learning import Learning
 from review_ledger.models import canonical
 
 
-def test_saved_baseline_is_actual_existing_recall(tmp_path):
+def test_saved_baseline_preserves_legacy_recall_fields_and_measures_new_metadata(tmp_path):
     ledger, _, run, _, scope, query, _, _ = _synthetic_case(tmp_path, "irrelevant")
     old = SavedBaseline(ledger.store).recall(scope, run["id"], terms=[query])
     current = Learning(ledger.store).recall(scope, run["id"], terms=[query])
-    assert old == current
-    assert len(old["lessons"]) == 1
+    # Keep the historical comparator unchanged. Critic provenance is additive
+    # metadata in current recall, and its serialized size is real overhead.
+    assert len(old["lessons"]) == len(current["lessons"]) == 1
+    assert old["lesson_references"] == current["lesson_references"] == []
+    legacy_lessons = []
+    for lesson in current["lessons"]:
+        assert lesson["critic_assessment_ids"] == []
+        assert lesson["critic_links_eligible"] is True
+        legacy_lessons.append({key: value for key, value in lesson.items()
+                               if key not in {"critic_assessment_ids", "critic_links_eligible"}})
+    assert old["lessons"] == legacy_lessons
+    assert {key: value for key, value in old.items() if key not in {"lessons", "context_chars"}} == {
+        key: value for key, value in current.items() if key not in {"lessons", "context_chars"}}
+    assert old["context_chars"] == sum(len(canonical(lesson)) for lesson in legacy_lessons)
+    assert current["context_chars"] == sum(len(canonical(lesson)) for lesson in current["lessons"])
+    assert current["context_chars"] > old["context_chars"]
     assert "CSS" not in canonical(old)
 
 

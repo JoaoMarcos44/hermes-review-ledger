@@ -19,7 +19,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_TOOLS = {
     "ledger_open", "ledger_status", "ledger_run", "ledger_record",
-    "ledger_recall", "ledger_lesson", "ledger_export", "ledger_context",
+    "ledger_recall", "ledger_lesson", "ledger_export", "ledger_context", "ledger_critic",
 }
 
 
@@ -621,4 +621,67 @@ assert any(r["kind"] == "skill" and "Preserve the synthetic exclusion" in r["con
 operator(["skill-disable", "Example/project", imported["id"], "--reason", "Synthetic revocation", "--request-key", "native-disable"])
 revoked = model_dispatch("ledger_context", {"repository":"Example/project", "run_id":run["id"], "action":"resume", "manifest_id":with_skill["manifest_id"]}, "session-b")
 assert revoked["state"] == "error" and revoked["error"]["code"] == "ineligible_skill", revoked
+''')
+
+
+def test_real_critic_disabled_preserves_v15_runtime(hermes_source, tmp_path):
+    _critic_refusal_runtime(hermes_source, tmp_path, False, "critic_disabled")
+
+
+def test_real_critic_unverifiable_preserves_v15_runtime(hermes_source, tmp_path):
+    _critic_refusal_runtime(hermes_source, tmp_path, True, "critic_route_unverifiable")
+
+
+def _critic_refusal_runtime(hermes_source, tmp_path, enabled, expected_error):
+    _runtime(hermes_source, tmp_path, f'''\nCRITIC_ENABLED = {enabled!r}\nEXPECTED_ERROR = {expected_error!r}\n''' + r'''
+install_fixture(HOME)
+config = HOME / "config.yaml"
+config.write_text(config.read_text() + "        context_enabled: true\n        usage_enabled: true\n"
+                  + "        critic_enabled: " + str(CRITIC_ENABLED).lower() + "\n"
+                  + "        critic_authorized_repositories: [Example/project]\n"
+                    "        critic_provider: synthetic-provider\n        critic_model: synthetic-model\n", encoding="utf-8")
+llm_accesses = []
+def forbidden_llm(ctx):
+    llm_accesses.append(True)
+    raise AssertionError("Real host LLM must never be accessed")
+PluginContext.llm = property(forbidden_llm)
+manager, loaded = load_fixture()
+run = open_fixture(loaded)
+base = {"repository": "Example/project", "run_id": run["id"], "generation": run["generation"]}
+finding = model_dispatch("ledger_record", {**base, "action": "finding", "data": {"claim": "Synthetic bounded claim"},
+                                            "request_key": "critic-finding"}, "session-a")
+prepared = model_dispatch("ledger_critic", {**base, "action": "prepare", "finding_ids": [finding["finding_id"]],
+                                           "request_key": "critic-prepare"}, "session-a")
+assert prepared["state"] == "prepared", prepared
+refused = model_dispatch("ledger_critic", {**base, "action": "run", "critic_run_id": prepared["critic_run_id"],
+                                          "request_key": "critic-refused"}, "session-a")
+assert refused["error"]["code"] == EXPECTED_ERROR, refused
+assert not llm_accesses
+read = {"repository": "Example/project", "run_id": run["id"]}
+status = model_dispatch("ledger_critic", {**read, "action": "status", "critic_run_id": prepared["critic_run_id"]}, "session-b")
+assert json.loads(status["content"])["execution"] == "prepared", status
+bundle = model_dispatch("ledger_context", {**read, "action": "prepare", "query": "synthetic"}, "session-b")
+assert bundle["state"] == "ok" and bundle["manifest_id"], bundle
+assert model_dispatch("ledger_status", read, "session-b")["run"]["id"] == run["id"]
+report = model_dispatch("ledger_export", {**read, "format": "json"}, "session-b")
+content = json.loads(report["content"])
+assert content["critic_runs"][0]["execution"] == "prepared"
+assert content["context_manifests"][0]["id"] == bundle["manifest_id"]
+plugin_tools = importlib.import_module(loaded.module.__name__ + ".review_ledger.tools")
+ledger = plugin_tools.ledger_for_context(PluginContext(loaded.manifest, manager))
+with ledger.store.connect() as conn:
+    measured = {r[0] for r in conn.execute("SELECT tool FROM usage_events")}
+assert {"ledger_critic", "ledger_context", "ledger_export"}.issubset(measured), measured
+from hermes_cli.main import _attach_plugin_cli_command
+parser = argparse.ArgumentParser()
+subparsers = parser.add_subparsers(dest="command", required=True)
+entry = list(manager._cli_commands.values())[0]
+_attach_plugin_cli_command(subparsers, entry)
+args = parser.parse_args([entry["name"], "critic-abandon", "Example/project", run["id"], prepared["critic_run_id"],
+                          "--reason", "Synthetic operator decision", "--request-key", "critic-abandon"])
+output = io.StringIO()
+with contextlib.redirect_stdout(output):
+    assert args.func(args) == 0, output.getvalue()
+assert json.loads(output.getvalue())["state"] == "abandoned"
+assert not llm_accesses
 ''')

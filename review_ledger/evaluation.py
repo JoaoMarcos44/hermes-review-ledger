@@ -2,6 +2,8 @@
 
 Baseline methods below are preserved from the repository HEAD at implementation
 start, rather than a fabricated database dump. No model or network is required.
+Later additive critic metadata is intentionally absent from the frozen baseline;
+these fixtures do not model critic opinions or measure critic quality.
 """
 from __future__ import annotations
 
@@ -371,6 +373,7 @@ def evaluate(*, budget=12000):
     return {"kind": "offline_synthetic_mechanism_evaluation", "baseline_source": BASELINE_SOURCE,
             "budget_unit": "serialized_characters", "budget": budget, "cases": results,
             "coverage": "Rendered plugin responses including explicit detail calls. Context includes protocol/run metadata absent from legacy recall. "
+                        "The frozen historical baseline is not current recall: later critic provenance metadata is absent, and these fixtures contain no critic opinions. "
                         "Detail access is requested only for disclosed expected versions whose correctness-critical fields were not fully loaded; oversized detail uses complete semantic sections.",
             "latency": "Observed local initial retrieval/assembly milliseconds; hardware-dependent, not deterministic timing.",
             "total_review_token_savings": None, "total_review_cost_savings": None,

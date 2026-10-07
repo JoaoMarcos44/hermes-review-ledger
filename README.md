@@ -1,10 +1,4 @@
-# Hermes Review Ledger 0.3.0
-
-
-
- 
-
-
+# Hermes Review Ledger 0.4.0
 
 **V1.5 pilot:** [installation, exact defaults, operator/agent workflow, version mapping, limitations and evaluation](docs/v15-pilot.md). The original workflow remains available with pilot features disabled.
 
@@ -80,7 +74,7 @@ unqualified registry package with this name as a substitute.
 
 Pip installs the command and a complete bundled native-plugin payload. It does
 not select or modify a Hermes profile. The explicit `install --profile-dir` step
-copies `plugin.yaml`, the root `__init__.py`, runtime modules, SQL migration, and
+copies `plugin.yaml`, the root `__init__.py`, runtime modules, SQL migrations, versioned critic prompt, and
 bundled skill together. If the console command is not on PATH, use
 `python -m review_ledger` with that virtual environment's interpreter.
 
@@ -183,7 +177,7 @@ There are three separate steps: installing its files, enabling discovery in a
 chosen Hermes profile, and invoking a tool for an authorized review. Merely copying
 this directory or loading its skill does not start a review.
 
-- Hermes discovery calls the root `register(ctx)`, which registers eight tools (the context operation is disabled by default),
+- Hermes discovery calls the root `register(ctx)`, which registers nine tools (context and critic are disabled by default),
   one skill, and the operator CLI. Registration opens no database, reads no GitHub
   token, performs no HTTP requests, and starts no background task.
 - `ledger_open` is the only network-facing tool. After trusted-session and
@@ -204,8 +198,24 @@ this directory or loading its skill does not start a review.
 
 The learning cycle is persisted bookkeeping: observation, candidate, operator
 approval, recall, exact-version use, reported result, and optional operator
-revision or revocation. It does not train model weights, launch additional models,
-rewrite the skill, or run a self-improvement loop.
+revision or revocation. It does not train model weights, rewrite the skill, or run
+a self-improvement loop. The separate optional critic is described below.
+
+### Optional claim critic
+
+Integrated version 0.4.0 includes one optional critic tool, `ledger_critic`, with `prepare`, `run`, `status` and
+`assess` actions. The critic is disabled by default. Preparation and reading are
+local; only explicit execution reaches the optional provider boundary. The
+pinned Hermes host cannot publicly prove its complete effective egress/fallback
+route before dispatch, so the real adapter returns `critic_route_unverifiable`
+without calling a model, even when enabled. Normal review remains available.
+
+Read [optional critic configuration, lifecycle and limits](docs/optional-critic.md)
+before opting in. The default limits are 18,000 input characters, 2,000 output
+tokens, 60 seconds and three logical attempts per run. These are initial caps,
+not measured quality/cost guarantees. Consent must cover repository context and
+the effective model/provider/account/fallback route. No credentials, permissions,
+paid smoke, automatic debate or publication are authorized by enabling the plugin.
 
 ### Evidence-based feedback and superseded PRs
 
@@ -368,13 +378,22 @@ bounded lock waits are used. Database contention produces an explicit error;
 retry with the same request key. Network calls and optional artifact staging are
 outside database writer transactions.
 
-The current data schema is version 2. First access upgrades an authorized
-version-1 database atomically by adding query indexes; review records, receipts,
-lessons, and artifacts are preserved. Two processes coordinate the upgrade with
-the same SQLite writer lock. Index creation can take time on a large history;
-stop sessions and retain a verified backup before an intentional upgrade.
-Older code supporting only schema version 1 refuses a version-2 database. Downgrading code does
-not downgrade data, and no automatic schema downgrade is provided.
+The current data schema is version 4, preserving the `adaptive-v15` lineage.
+First access upgrades an authorized version-1/2 database or genuine V1.5
+schema-3 database atomically: query indexes, adaptive context and critic tables
+are applied in order. Review records, receipts, exact resources, approvals,
+usage records, lessons and artifacts are preserved. Two processes coordinate
+migration with the same SQLite writer lock. Stop sessions and retain a verified
+backup before upgrading.
+
+The experimental critic 0.2.0 schema 3 is incompatible and is refused without
+mutation. Never relabel its version or lineage. Back it up with the original
+experimental tooling, retaining its artifacts and later history separately.
+Use a fresh empty profile, or restore a verified pre-experimental V1/V2 backup
+at its original resolved profile data path; ownership is path-bound. Do not
+rewrite the ownership key or move a restored database to another profile. See the
+[V1.5 compatibility guide](docs/v15-pilot.md#release-identities-and-compatibility).
+Older code refuses schema 4; no automatic schema downgrade is provided.
 
 ### Explicit SQLite journal policy
 
@@ -428,7 +447,7 @@ The command uses `sqlite3.Connection.backup`, explicitly sets the private backup
 
 The SQLite backup copy phase has a ten-second progress deadline. Opening the database, copying the restored file, and running integrity checks are outside that deadline; this is not a total wall-clock guarantee. Optional artifact staging is cleaned up after ordinary failed operations or idempotent retries; an abrupt process termination can leave an unreferenced bounded artifact file. There is no background cleanup process.
 
-Do not store credentials, sensitive variables, or full conversations. No regex is claimed to remove every secret. The plugin never transmits ledger memory to another service and has no remote telemetry.
+Do not store credentials, sensitive variables, or full conversations. No regex is claimed to remove every secret. Normal review does not transmit ledger memory to another service and has no remote telemetry. The optional critic has a separate explicit consent boundary; on the pinned host its real adapter refuses before transmission because the effective route cannot be publicly verified.
 
 ## Testing
 
@@ -475,11 +494,11 @@ The suite covers Unicode/spaced profile paths, real filesystem cleanup, determin
 
 Actual validation results are recorded only after running the final source. Do not infer coverage for an OS without an execution report from its real native runner. Live GitHub authentication, a real user PR pilot, and a full interactive model conversation require separate validation. The plugin does not claim measured improvement in review quality.
 
-The validation totals and actual command output are recorded in the accompanying implementation report and native CI artifacts, each tied to the source revision. Missing, pending, failed, or skipped native runs are never counted as passes. The official CLI Plugin Doctor reported 7 tools and 0 hooks with no findings. `hermes plugins validate` passed, including manifest/registration agreement and its no-core-override check. Source distribution and complete installer wheel builds succeeded. Build artifacts are local and were not published.
+The validation totals and actual command output are recorded in the accompanying implementation report and native CI artifacts, each tied to the source revision. Missing, pending, failed, or skipped native runs are never counted as passes. Earlier 0.1.0 validation reported 7 tools and 0 hooks with no findings; that result is historical, not validation of the integrated nine-tool release. The earlier `hermes plugins validate` pass included manifest/registration agreement and its no-core-override check. New validation results must be tied to integrated 0.4.0; the old native results do not certify this extension. Package tests build and install the source distribution and complete installer wheel locally; artifacts are not published.
 
 ## Source layout and licensing
 
-Runtime modules use only the Python standard library. Hermes integration is confined to `tools.py` and the local operator adapter. Domain models, service and learning do not import Hermes or any model SDK.
+Runtime modules use the Python standard library and PyYAML for safe local skill frontmatter parsing. Hermes integration is confined to `tools.py`, `critic_hermes.py` and the local operator adapter. Domain models, service and learning do not import Hermes or any model SDK.
 
 The initial SQL migration is inside `review_ledger/migrations/`. `setup.py` builds the wheel’s complete native-plugin payload from the authoritative root manifest, entry point, skill and runtime files; there is no second editable copy to keep in sync. `review_ledger/installer.py` implements the explicit profile command. There is one authoritative editable store, SQLite; reports and exports are derived output.
 
@@ -487,4 +506,4 @@ No project license or authorship declaration is invented. Licensing remains the 
 
 ## Deliberately deferred
 
-MCP, dashboards, other hosting, external review imports, memory synchronization, embeddings/graphs/PostgreSQL, auxiliary models, telemetry, daemons/cron/webhooks, distributed queues, parallel agents, target-repository test execution, code-fix commits, publication and merges are outside V1. None has a placeholder framework or configuration switch here.
+MCP, dashboards, other hosting, external review imports, memory synchronization, embeddings/graphs/PostgreSQL, unrestricted auxiliary models, telemetry, daemons/cron/webhooks, distributed queues, parallel agents, target-repository test execution, code-fix commits, publication and merges are outside V1. The bounded optional claim critic is the only auxiliary-model extension; none of the other deferred features has a placeholder framework here.

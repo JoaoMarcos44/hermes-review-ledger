@@ -119,6 +119,8 @@ def installed_package(tmp_path_factory) -> InstalledPackage:
     payload_files = [source / "__init__.py", source / "plugin.yaml"]
     payload_files.extend((source / "review_ledger").glob("*.py"))
     payload_files.extend((source / "review_ledger" / "migrations").glob("*.sql"))
+    payload_files.extend((source / "review_ledger" / "prompts").glob("*.md"))
+    payload_files.extend((source / "review_ledger" / "resources").glob("*.md"))
     payload_files.extend(path for path in (source / "skills").rglob("*") if path.is_file())
     expected_hashes = {
         path.relative_to(source).as_posix(): _digest(path.read_bytes())
@@ -130,6 +132,9 @@ def installed_package(tmp_path_factory) -> InstalledPackage:
         "review_ledger/__init__.py", "review_ledger/__main__.py",
         "review_ledger/installer.py", "review_ledger/tools.py",
         "review_ledger/storage.py", "review_ledger/migrations/001_initial.sql",
+        "review_ledger/migrations/004_critic.sql", "review_ledger/prompts/critic_v1.md",
+        "review_ledger/migrations/003_adaptive_context.sql", "review_ledger/resources/protocol.md",
+        "review_ledger/critic.py", "review_ledger/critic_hermes.py",
     } <= expected_hashes.keys()
 
     distributions = workspace / "dist"

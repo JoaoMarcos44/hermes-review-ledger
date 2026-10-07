@@ -1,5 +1,5 @@
 name: review-ledger
-version: 0.3.0
+version: 0.4.0
 description: Profile-local review investigations and explicitly approved lessons
 provides_tools:
   - ledger_open
@@ -10,6 +10,7 @@ provides_tools:
   - ledger_lesson
   - ledger_export
   - ledger_context
+  - ledger_critic
 config_schema:
   authorized_repositories:
     type: list
@@ -43,3 +44,36 @@ config_schema:
     type: int
     default: 12000
     description: Full serialized context response character cap from 2000 to 64000
+
+  critic_enabled:
+    type: bool
+    default: false
+    description: Opt-in critic; does not grant host permissions or prove an authorized route
+  critic_authorized_repositories:
+    type: list
+    default: []
+    description: Explicit repository consent for sending the bounded critic packet
+  critic_provider:
+    type: str
+    default: ""
+    description: Operator-selected requested provider; no model-supplied override
+  critic_model:
+    type: str
+    default: ""
+    description: Operator-selected requested model; never silently use the main model
+  critic_max_input_chars:
+    type: int
+    default: 18000
+    description: Maximum complete serialized packet characters; no silent premise truncation
+  critic_max_output_tokens:
+    type: int
+    default: 2000
+    description: Requested output token cap
+  critic_timeout_seconds:
+    type: int
+    default: 60
+    description: Local timeout budget; not a remote cancellation guarantee
+  critic_max_calls_per_run:
+    type: int
+    default: 3
+    description: Persisted logical-attempt budget per review run

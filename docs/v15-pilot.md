@@ -2,19 +2,32 @@
 
 ## Release identities and compatibility
 
-V1.5 is a product milestone. The Python package/plugin is **0.3.0**, the immutable
-procedure is **1**, the deterministic selection policy is **1**, and SQLite
-schema is **3**, lineage `adaptive-v15`. These identities are independent.
+V1.5 remains the controlled-context product milestone. The integrated Python
+package/plugin is **0.4.0**, the immutable procedure is **1**, the deterministic
+selection policy is **1**, and SQLite schema is **4**, lineage `adaptive-v15`.
+These identities are independent. The optional critic uses prompt version 1.
 
-This release starts at public main `99f8d98b59720847df410ac59d8e7782d9f51629`.
-Open PRs 4, 5 and 6 are separate work and are not merged by this release.
-In particular, PR5's experimental critic uses an incompatible schema 3.
-This release rejects that database without mutation; it does not reinterpret it,
-activate a critic, or claim that the two branches can be combined automatically.
-A future integration needs an explicit migration and version reconciliation.
-Schema 1 and genuine schema 2 databases migrate transactionally. Stop older
-plugin sessions before upgrading, keep backups, and do not downgrade a migrated
-profile to an older plugin. Existing profile and SQLite journal fences remain.
+The integration preserves V1.5 main and combines the feedback protocol (#4),
+optional critic lifecycle (#5), and README identity (#6). The critic is still
+disabled by default, and its real pinned-Hermes adapter remains blocked before
+model access or transmission with `critic_route_unverifiable`.
+
+Schema 1, genuine schema 2, and V1.5 schema 3 (`adaptive-v15`) databases migrate
+transactionally to schema 4. The experimental 0.2.0 critic schema 3 is a distinct
+lineage and is rejected without mutation. Do not change its user_version or
+lineage manually. Stop sessions and preserve a verified experimental backup
+and its artifacts separately with the original 0.2.0 tooling. A verified
+pre-experimental V1/V2 backup may be restored only at its original resolved
+profile data path: profile ownership is path-bound and must not be rewritten.
+Later records and critic history remain only in the retained experimental backup.
+Alternatively, start an empty separate profile, or stay on the matching
+experimental build while awaiting an explicit converter. Automatic conversion
+of experimental critic records is not supported.
+
+Stop older plugin sessions before upgrading, retain a verified backup, and do
+not downgrade a migrated profile to an older plugin. Existing profile ownership,
+SQLite journal fences, exact resources, manifests, approvals and usage records
+are preserved.
 
 ## Installation and defaults
 
@@ -31,9 +44,10 @@ frontmatter parsing. The explicit profile copier does not install dependencies
 into Hermes: ensure that reviewed dependency is available in the selected Hermes
 Python environment. No tokenizer/model is installed or downloaded on startup.
 
-All four pilot switches default to false. Eight tool names are registered to
-match the manifest and native Plugin Doctor; `ledger_context` fails closed until
-context is enabled. The seven original tools and legacy budget/pagination
+All four V1.5 pilot switches and the separate critic switch default to false.
+Nine tool names are registered to match the manifest and native Plugin Doctor;
+`ledger_context` fails closed until context is enabled, and critic dispatch
+remains blocked on the pinned Hermes host even if its setting is enabled. The seven original tools and legacy budget/pagination
 contracts remain available. Migration does not enable any feature, import a
 skill, widen a repository allowlist, start inference or alter personal profiles.
 

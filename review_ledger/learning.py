@@ -38,13 +38,45 @@ class Learning:
         self.improvements_enabled = improvements_enabled
 
     @staticmethod
+    def critic_links_eligible(conn, scope: Scope, assessment_ids, source_ids, run_id=None) -> bool:
+        """Opinions are provenance; only current adjudications backed by observations qualify."""
+        from .critic import Critic
+        for ident in assessment_ids:
+            row = conn.execute("""SELECT a.*,i.critic_run_id FROM critic_assessments a
+                JOIN critic_objections o ON o.id=a.objection_id
+                JOIN critic_items i ON i.id=o.item_id
+                WHERE a.repository_id=? AND a.id=?""", (scope.repository_id, ident)).fetchone()
+            if row is None or row["state"] not in ("supported", "refuted") or row["freshness"] != "current":
+                return False
+            criticism = conn.execute("SELECT * FROM critic_runs WHERE repository_id=? AND id=?",
+                                     (scope.repository_id, row["critic_run_id"])).fetchone()
+            if criticism is None or criticism["execution"] != "returned" or Critic.freshness(conn, scope, criticism) != "current":
+                return False
+            if run_id is not None and criticism["run_id"] != run_id:
+                return False
+            observations = conn.execute("""SELECT o.* FROM critic_assessment_sources s
+                JOIN observations o ON o.id=s.observation_id
+                WHERE s.repository_id=? AND s.assessment_id=?""", (scope.repository_id, ident)).fetchall()
+            if not observations or any(o["id"] not in source_ids or not o["valid"]
+                                      or o["outcome"] not in ELIGIBLE_OUTCOMES
+                                      or o["provenance"] != "agent_reported"
+                                      or o["run_id"] != criticism["run_id"] for o in observations):
+                return False
+        return True
+
+    @staticmethod
+    def linked_assessments(conn, scope: Scope, version_id: str):
+        return [r[0] for r in conn.execute("SELECT assessment_id FROM critic_lesson_links WHERE repository_id=? AND version_id=? ORDER BY assessment_id", (scope.repository_id, version_id))]
+
+    @staticmethod
     def eligible(conn, scope: Scope, version_id: str) -> bool:
         lesson = conn.execute("SELECT state FROM lesson_versions WHERE repository_id=? AND id=?", (scope.repository_id, version_id)).fetchone()
         if lesson is None or lesson["state"] != "active":
             return False
-        sources = conn.execute("""SELECT o.valid,o.outcome FROM lesson_sources s JOIN observations o ON o.id=s.observation_id
+        sources = conn.execute("""SELECT o.id,o.valid,o.outcome FROM lesson_sources s JOIN observations o ON o.id=s.observation_id
             WHERE s.repository_id=? AND s.version_id=? LIMIT 21""", (scope.repository_id, version_id)).fetchall()
-        return bool(sources) and len(sources) <= 20 and all(s["valid"] and s["outcome"] in ELIGIBLE_OUTCOMES for s in sources)
+        return (bool(sources) and len(sources) <= 20 and all(s["valid"] and s["outcome"] in ELIGIBLE_OUTCOMES for s in sources)
+                and Learning.critic_links_eligible(conn, scope, Learning.linked_assessments(conn, scope, version_id), {s["id"] for s in sources}))
 
     @staticmethod
     def version(conn, scope: Scope, version_id: str) -> dict:
@@ -55,12 +87,15 @@ class Learning:
         sources = [dict(r) for r in conn.execute("""SELECT s.observation_id,s.relation,o.run_id,o.provenance,o.valid,o.outcome
             FROM lesson_sources s JOIN observations o ON o.id=s.observation_id WHERE s.repository_id=? AND s.version_id=? ORDER BY s.observation_id LIMIT 21""", (scope.repository_id, version_id))]
         item["sources"] = sources[:20]
+        item["critic_assessment_ids"] = Learning.linked_assessments(conn, scope, version_id)
+        item["critic_links_eligible"] = Learning.critic_links_eligible(conn, scope, item["critic_assessment_ids"], {s["observation_id"] for s in sources})
         item["eligible_now"] = (item["state"] == "active" and bool(sources) and len(sources) <= 20
-                                and all(s["valid"] and s["outcome"] in ELIGIBLE_OUTCOMES for s in sources))
+                                and all(s["valid"] and s["outcome"] in ELIGIBLE_OUTCOMES for s in sources)
+                                and item["critic_links_eligible"])
         return item
 
     def propose(self, scope: Scope, run_id: str, actor: Actor, generation: int, data: dict, request_key: str, *, _conn=None):
-        fields(data, {"question", "conditions", "exclusions", "verification", "tags", "symbols", "sources", "previous_version_id"},
+        fields(data, {"question", "conditions", "exclusions", "verification", "tags", "symbols", "sources", "previous_version_id", "critic_assessment_ids"},
                {"question", "conditions", "exclusions", "verification", "sources"})
         question = text(data["question"], "question", 1500)
         conditions = strings(data["conditions"], "conditions", 10, 500)
@@ -79,15 +114,27 @@ class Learning:
         if len({s[0] for s in sources}) != len(sources):
             raise LedgerError("invalid_input", "Duplicate lesson sources are not allowed")
 
+        critic_ids = strings(data.get("critic_assessment_ids", []), "critic_assessment_ids", 20, 64)
+        if len(critic_ids) != len(data.get("critic_assessment_ids", [])):
+            raise LedgerError("invalid_input", "Duplicate critic assessments are not allowed")
+
         def write(conn):
             self.store.owner(conn, scope, run_id, actor, generation)
+            previous = data.get("previous_version_id")
+            old = self.version(conn, scope, previous) if previous else None
+            # Exact inherited provenance may originate in an earlier review run.
+            # New links still require this run; neither route relaxes freshness,
+            # repository scoping, or the complete verification-source fence.
+            inherited = set(old["critic_assessment_ids"]) & set(critic_ids) if old else set()
+            source_ids = {s[0] for s in sources}
+            if (not self.critic_links_eligible(conn, scope, inherited, source_ids)
+                    or not self.critic_links_eligible(conn, scope, set(critic_ids) - inherited, source_ids, run_id)):
+                raise LedgerError("ineligible_source", "Critic provenance requires current supported/refuted assessments and all their verification observations; new links must belong to this run")
             for ident, _ in sources:
                 obs = conn.execute("SELECT valid,outcome FROM observations WHERE repository_id=? AND id=?", (scope.repository_id, ident)).fetchone()
                 if obs is None or not obs["valid"] or obs["outcome"] not in ELIGIBLE_OUTCOMES:
                     raise LedgerError("ineligible_source", "Lesson sources must be eligible observations in this repository")
-            previous = data.get("previous_version_id")
-            if previous:
-                old = self.version(conn, scope, previous)
+            if old:
                 lesson_id = old["lesson_id"]
                 version = conn.execute("SELECT MAX(version)+1 FROM lesson_versions WHERE lesson_id=?", (lesson_id,)).fetchone()[0]
             else:
@@ -99,6 +146,8 @@ class Learning:
                          (ident, scope.repository_id, lesson_id, version, previous, question, canonical(conditions), canonical(exclusions), verification, canonical(tags), canonical(symbols), now()))
             for source_id, relation in sources:
                 conn.execute("INSERT INTO lesson_sources VALUES (?,?,?,?)", (scope.repository_id, ident, source_id, relation))
+            for assessment_id in critic_ids:
+                conn.execute("INSERT INTO critic_lesson_links VALUES (?,?,?)", (scope.repository_id, ident, assessment_id))
             self.store.audit(conn, scope, ident, "proposed", actor.session_id, {"run_id": run_id})
             return {"state": "candidate", "lesson_id": lesson_id, "version_id": ident, "version": version,
                     "approval_required": "Separate local operator CLI operation"}
@@ -119,7 +168,7 @@ class Learning:
                 Improvements.validate_approval(conn, scope, version_id)
                 if lesson["state"] != "candidate":
                     raise LedgerError("invalid_transition", "Only a new candidate version can be approved; revise suspended knowledge first")
-                if not lesson["sources"] or any(not s["valid"] or s["outcome"] not in ELIGIBLE_OUTCOMES for s in lesson["sources"]):
+                if not lesson["critic_links_eligible"] or not lesson["sources"] or any(not s["valid"] or s["outcome"] not in ELIGIBLE_OUTCOMES for s in lesson["sources"]):
                     raise LedgerError("ineligible_source", "An invalid source prevents approval")
                 # A delayed approval cannot displace a newer approved version.
                 newer = conn.execute("SELECT 1 FROM lesson_versions WHERE lesson_id=? AND version>? AND approved_at IS NOT NULL", (lesson["lesson_id"], lesson["version"])).fetchone()
@@ -174,6 +223,16 @@ class Learning:
                     WHERE s.repository_id=? AND s.version_id IN ({version_slots}) GROUP BY s.version_id""", source_args)
                 eligible_ids = {row["version_id"] for row in source_rows
                                 if 1 <= row["source_count"] <= 20 and row["sources_eligible"]}
+            # Most versions have no critic links; keep the existing bounded aggregate path.
+            if eligible_ids:
+                slots = ",".join("?" for _ in eligible_ids)
+                linked = {}
+                for link in conn.execute(f"SELECT version_id,assessment_id FROM critic_lesson_links WHERE repository_id=? AND version_id IN ({slots})", (scope.repository_id, *sorted(eligible_ids))):
+                    linked.setdefault(link["version_id"], []).append(link["assessment_id"])
+                for version_id, assessment_ids in linked.items():
+                    source_ids = {r[0] for r in conn.execute("SELECT observation_id FROM lesson_sources WHERE repository_id=? AND version_id=?", (scope.repository_id, version_id))}
+                    if not self.critic_links_eligible(conn, scope, assessment_ids, source_ids):
+                        eligible_ids.discard(version_id)
             normalized_terms = [normalize_search(term) for term in terms]
             normalized_tags = {normalize_search(tag) for tag in tags}
             normalized_symbols = {normalize_search(symbol) for symbol in symbols}
