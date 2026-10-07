@@ -1,6 +1,7 @@
 include plugin.yaml __init__.py README.md setup.py
 recursive-include review_ledger/migrations *.sql
 recursive-include skills *.md
+recursive-include docs *.md
 recursive-include tests *.py
 recursive-include scripts/ci *.py *.md
 include .github/workflows/native-tests.yml

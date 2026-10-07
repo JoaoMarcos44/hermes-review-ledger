@@ -199,6 +199,27 @@ approval, recall, exact-version use, reported result, and optional operator
 revision or revocation. It does not train model weights, launch additional models,
 rewrite the skill, or run a self-improvement loop.
 
+### Evidence-based feedback and superseded PRs
+
+The bundled skill also covers contract-first criticism and preserving a review
+when the base already satisfies the PR's purpose. These use existing observations,
+assessments, completion notes and operator-approved lessons; they add no tools,
+runtime entities, background execution or schema migration.
+
+- [Manual feedback pilot](docs/review-feedback-pilot.md): independent claims,
+  bounded critique, evidence-based adjudication, comparable baselines, and
+  separate measurements of immediate review benefit and held-out lesson benefit.
+- [Superseded PR investigations](docs/superseded-reviews.md): preserve scoped
+  evidence without confusing obsolete proposed code with the internal superseded
+  snapshot state, or treating old conclusions as a permanent skip instruction.
+
+These guides do not claim measured reviewer improvement, token savings, or a
+completed comparison between models. The plugin still assigns `agent_reported`
+provenance, keeps one writer, and requires separate operator approval of lessons.
+Neither a critique nor lack of reproduction automatically invalidates evidence.
+A changed skill hash creates a new comparison identity on the next open; this
+documentation/skill update does not retroactively revalidate historical results.
+
 Internal loops are bounded: GitHub transport has at most two retries after an
 initial GET, pagination advances one page at a time under page/file caps, SQLite
 writer acquisition has at most three attempts, and retrieval/export have explicit
