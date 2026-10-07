@@ -1,5 +1,12 @@
 # Hermes Review Ledger 0.2.0
 
+<p align="center">
+  <img src="docs/assets/ledger-pixel.gif" width="640" height="360" alt="Ledger, a green-haired, purple-suited pixel character, laughing and holding a playing card. Silent animation." />
+</p>
+
+**Meet Ledger.** The project's visual identity is a tribute to Heath Ledger and his portrayal of the Joker.
+The animation is silent. [View the still image](docs/assets/ledger-pixel.png).
+
 A small native Hermes plugin for persistent, profile-local GitHub PR investigations and operator-approved conditional investigation lessons.
 
 Hermes investigates code using its authorized host tools. Review Ledger records state and agent-reported evidence, coordinates a single writer, and helps retrieve relevant questions. It does not execute repository commands, independently observe tests, train models, or establish that a reviewer became better.
