@@ -1,5 +1,11 @@
 # Hermes Review Ledger 0.1.0
 
+
+
+https://github.com/user-attachments/assets/34469c1c-6007-4f47-953c-44dac87d23d9
+
+
+
 A small native Hermes plugin for persistent, profile-local GitHub PR investigations and operator-approved conditional investigation lessons.
 
 Hermes investigates code using its authorized host tools. Review Ledger records state and agent-reported evidence, coordinates a single writer, and helps retrieve relevant questions. It does not execute repository commands, independently observe tests, train models, or establish that a reviewer became better.
