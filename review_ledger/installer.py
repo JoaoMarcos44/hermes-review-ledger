@@ -142,8 +142,9 @@ def _payload() -> dict[str, bytes]:
     names += [p.relative_to(root).as_posix() for p in (root / "review_ledger").glob("*.py")]
     names += [p.relative_to(root).as_posix() for p in (root / "review_ledger" / "migrations").glob("*.sql")]
     names += [p.relative_to(root).as_posix() for p in (root / "skills").rglob("*.md")]
+    names += [p.relative_to(root).as_posix() for p in (root / "review_ledger" / "resources").glob("*.md")]
     required = {"review_ledger/tools.py", "review_ledger/migrations/001_initial.sql",
-                "skills/review-ledger/SKILL.md"}
+                "skills/review-ledger/SKILL.md", "review_ledger/resources/protocol.md"}
     if not required.issubset(names):
         raise InstallError("Incomplete plugin payload; reinstall the package or use the complete source checkout")
     payload = {}

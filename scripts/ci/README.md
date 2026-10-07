@@ -12,8 +12,9 @@ The public Hermes checkout is pinned to
 revision, rejects tracked modifications, checks the native OS, and requires
 Python 3.14. CI installs Hermes in editable source mode with its base dependencies
 from that checkout, without optional extras. Hermes' upstream setup guard does
-not support ordinary wheel installation. The ledger remains standard-library
-only; Hermes dependencies are test-host dependencies.
+not support ordinary wheel installation. The Ledger uses PyYAML for explicitly approved local skill frontmatter. Its
+profile copier remains standard-library-only; Hermes dependencies are test-host
+dependencies.
 
 To run the same validation locally with dependencies already installed:
 

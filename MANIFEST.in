@@ -4,3 +4,6 @@ recursive-include skills *.md
 recursive-include tests *.py
 recursive-include scripts/ci *.py *.md
 include .github/workflows/native-tests.yml
+
+recursive-include review_ledger/resources *.md
+recursive-include docs *.md

@@ -19,7 +19,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_TOOLS = {
     "ledger_open", "ledger_status", "ledger_run", "ledger_record",
-    "ledger_recall", "ledger_lesson", "ledger_export",
+    "ledger_recall", "ledger_lesson", "ledger_export", "ledger_context",
 }
 
 
@@ -577,3 +577,48 @@ assert operator("suspend", "suspend-large")["state"] == "suspended"
 revoked = model_dispatch("ledger_recall", {**query, "version_id": ref["version_id"]}, "session-b")
 assert revoked["error"]["code"] == "lesson_not_eligible", revoked
 """)
+
+
+def test_real_v15_context_registry_usage_and_resume(hermes_source, tmp_path):
+    _runtime(hermes_source, tmp_path, r'''
+install_fixture(HOME)
+config = HOME / "config.yaml"
+config.write_text(config.read_text() + "        context_enabled: true\n        optional_skills_enabled: true\n        improvements_enabled: true\n        usage_enabled: true\n", encoding="utf-8")
+EXPECTED_TOOLS.add("ledger_context")
+manager, loaded = load_fixture()
+run = open_fixture(loaded)
+context = model_dispatch("ledger_context", {"repository":"Example/project", "run_id":run["id"], "action":"prepare", "query":"retry"}, "session-a")
+assert context["state"] == "ok", context
+assert context["protocol"]["version"] == "1"
+assert len(json.dumps(context, ensure_ascii=False, separators=(",",":"))) <= 12000
+resumed = model_dispatch("ledger_context", {"repository":"Example/project", "run_id":run["id"], "action":"resume", "manifest_id":context["manifest_id"]}, "session-b")
+assert resumed["state"] == "ok" and "unknown" in resumed["residency"], resumed
+assert resumed["query"] == "retry"
+plugin_tools = importlib.import_module(loaded.module.__name__ + ".review_ledger.tools")
+ledger = plugin_tools.ledger_for_context(PluginContext(loaded.manifest, manager))
+usage_module = importlib.import_module(loaded.module.__name__ + ".review_ledger.usage")
+report = usage_module.Usage(ledger.store).report(ledger.scope("Example/project"), run["id"])
+assert report, report
+
+from hermes_cli.main import _attach_plugin_cli_command
+parser = argparse.ArgumentParser()
+subparsers = parser.add_subparsers(dest="command", required=True)
+entry = list(manager._cli_commands.values())[0]
+_attach_plugin_cli_command(subparsers, entry)
+def operator(argv):
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        args = parser.parse_args([entry["name"], *argv])
+        assert args.func(args) == 0, output.getvalue()
+    return json.loads(output.getvalue())
+package = HOME.parent / "approved-synthetic-skill"
+package.mkdir()
+(package / "SKILL.md").write_text("---\nname: native-fixture\ndescription: Synthetic approved local check\n---\nPreserve the synthetic exclusion.\n", encoding="utf-8")
+imported = operator(["skill-add", "Example/project", "synthetic/native-fixture", str(package), "--approve-import"])
+operator(["skill-enable", "Example/project", imported["id"], "--reason", "Synthetic exact text approved", "--request-key", "native-enable"])
+with_skill = model_dispatch("ledger_context", {"repository":"Example/project", "run_id":run["id"], "action":"prepare", "query":"synthetic"}, "session-a")
+assert any(r["kind"] == "skill" and "Preserve the synthetic exclusion" in r["content"]["instructions"] for r in with_skill["records"]), with_skill
+operator(["skill-disable", "Example/project", imported["id"], "--reason", "Synthetic revocation", "--request-key", "native-disable"])
+revoked = model_dispatch("ledger_context", {"repository":"Example/project", "run_id":run["id"], "action":"resume", "manifest_id":with_skill["manifest_id"]}, "session-b")
+assert revoked["state"] == "error" and revoked["error"]["code"] == "ineligible_skill", revoked
+''')

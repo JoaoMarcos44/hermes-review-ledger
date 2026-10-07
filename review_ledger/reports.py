@@ -53,11 +53,36 @@ def export(ledger: Ledger, repository: str, run_id: str, actor: Actor, *, format
                 if use["version_id"] not in seen:
                     lessons.append(Learning.version(conn, scope, use["version_id"]))
                     seen.add(use["version_id"])
+            manifests = []
+            manifest_rows = conn.execute("SELECT * FROM context_manifests WHERE repository_id=? AND run_id=? ORDER BY created_at,id LIMIT ? OFFSET ?", (scope.repository_id, run_id, limit + 1, offset)).fetchall()
+            omitted["context_manifests"] = len(manifest_rows) > limit
+            for row in manifest_rows[:limit]:
+                item = dict(row)
+                item["selections"] = json.loads(item.pop("selections_json"))
+                item.pop("request_json", None)
+                for selected in item["selections"]:
+                    kind, ident = selected["kind"], selected["id"]
+                    if kind == "lesson":
+                        selected["eligible_now"] = Learning.eligible(conn, scope, ident)
+                    elif kind == "skill":
+                        from .skills import Skills
+                        try:
+                            skill = Skills.version(conn, scope, ident, require_enabled=True)
+                            selected["eligible_now"] = skill["eligible_now"]
+                        except LedgerError:
+                            selected["eligible_now"] = False
+                    elif kind == "observation":
+                        observation = conn.execute("SELECT valid FROM observations WHERE repository_id=? AND run_id=? AND id=?", (scope.repository_id,run_id,ident)).fetchone()
+                        selected["eligible_now"] = bool(observation and observation["valid"])
+                    else:
+                        selected["eligible_now"] = None
+                item["reuse_notice"] = "Historical manifest; eligibility rechecked now, no content residency or current verification promised"
+                manifests.append(item)
             output = {"export_format_version": 1, "generated_at": now(),
                       "scope": {"repository_id": scope.repository_id, "repository_name": scope.repository_name,
                                 "profile_key": ledger.store.profile_key},
                       "run": snapshot, "snapshot": comparison_snapshot, **collections,
-                      "lesson_versions": lessons, "omitted": omitted,
+                      "lesson_versions": lessons, "context_manifests": manifests, "omitted": omitted,
                       "next_offset": offset + limit if any(omitted.values()) else None,
                       "limitations": ["All observations are agent_reported, including inspection and behavioral reports.",
                                       "Schema validity does not verify semantic truth or execution.",
@@ -83,6 +108,13 @@ def markdown(data: dict) -> str:
              f"Run: {run['id']} ({run['status']})", f"HEAD: {run['head_sha']}", f"Base: {run['base_sha']}",
              f"Comparison: {run['comparison']}", f"Skill: {run['skill_version']} / {run['skill_hash']}"]
     lines.extend(_snapshot_lines(data.get("snapshot") or {}))
+    if data.get("context_manifests"):
+        lines.extend(["", "## Context provenance"])
+        for manifest in data["context_manifests"]:
+            lines.append(f"Manifest {manifest['id']}: protocol {manifest['protocol_version']} / {manifest['protocol_hash']}; policy {manifest['policy_version']}. Delivery: {manifest['delivery_receipt']}.")
+            for selected in manifest["selections"]:
+                lines.append(f"- {selected['kind']} {selected['id']}: eligible now={selected['eligible_now']}; historical content digest {selected['sha256']}")
+
     lines.extend(["", "## Supported current assessments"])
     current = [a for a in data["assessments"] if a["state"] == "supported" and a["freshness"] == "current"]
     lines.extend(_assessment_lines(current) or ["None recorded on this page. Zero supported findings is a valid result."])
