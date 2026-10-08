@@ -4,7 +4,7 @@
 
 V1 is the public product identity. “V1.5” in older development notes names the
 internal adaptive-context milestone, not a released product version. The Python
-package/plugin is **1.0.1**, the immutable procedure revision is **2**, the deterministic
+package/plugin is **1.0.2**, the immutable procedure revision is **3**, the deterministic
 selection policy is **1**, and SQLite schema is **5**, lineage `adaptive-v15`.
 These identities are independent. The optional critic uses prompt version 1.
 

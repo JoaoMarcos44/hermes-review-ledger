@@ -2,10 +2,10 @@
 
 ## Identity and requirements
 
-Ledger V1 uses package, CLI and plugin version **1.0.1**. The earlier 0.x
+Ledger V1 uses package, CLI and plugin version **1.0.2**. The earlier 0.x
 identifiers were private development builds, not public releases. Historical
 reports and stored receipts retain their original versions. SQLite schema **5**,
-lineage `adaptive-v15`, protocol **2**, and critic prompt **1** stay independent.
+lineage `adaptive-v15`, protocol **3**, and critic prompt **1** stay independent.
 V1 does not imply production certification: the critic remains experimental,
 disabled by default and fail-closed in the pinned Hermes adapter.
 
@@ -26,7 +26,7 @@ Linux/macOS (choose an available supported interpreter):
 
 ```sh
 python3.14 -m venv .venv-ledger
-.venv-ledger/bin/python -m pip install /absolute/path/hermes_review_ledger-1.0.1-py3-none-any.whl
+.venv-ledger/bin/python -m pip install /absolute/path/hermes_review_ledger-1.0.2-py3-none-any.whl
 .venv-ledger/bin/python -m pip check
 .venv-ledger/bin/python -m review_ledger --version
 ```
@@ -35,12 +35,12 @@ Windows PowerShell:
 
 ```powershell
 py -3.14 -m venv .venv-ledger
-.\.venv-ledger\Scripts\python.exe -m pip install C:\Downloads\hermes_review_ledger-1.0.1-py3-none-any.whl
+.\.venv-ledger\Scripts\python.exe -m pip install C:\Downloads\hermes_review_ledger-1.0.2-py3-none-any.whl
 .\.venv-ledger\Scripts\python.exe -m pip check
 .\.venv-ledger\Scripts\python.exe -m review_ledger --version
 ```
 
-The final command should print `1.0.1`. Alternatively, with Git and your existing
+The final command should print `1.0.2`. Alternatively, with Git and your existing
 SSH authentication already configured, use the same environment's Python:
 
 ```sh
@@ -57,7 +57,7 @@ target Python/OS/architecture (or use a trusted dependency wheel supplied for it
 
 ```sh
 python -m pip download --only-binary=:all: --dest wheelhouse "PyYAML>=6.0.2,<7"
-python -m pip install --no-index --find-links /absolute/path/wheelhouse /absolute/path/hermes_review_ledger-1.0.1-py3-none-any.whl
+python -m pip install --no-index --find-links /absolute/path/wheelhouse /absolute/path/hermes_review_ledger-1.0.2-py3-none-any.whl
 python -m pip check
 ```
 
@@ -114,7 +114,7 @@ python -m review_ledger status --profile-dir "/absolute/path/to/profile"
 
 For an updated reviewed Git commit, use the pinned Git URL above with
 `pip install --upgrade` instead. If replacing a private build that also reports
-1.0.1, pip may consider it already installed. Prefer a new clean virtual
+1.0.2, pip may consider it already installed. Prefer a new clean virtual
 environment containing the reviewed wheel; otherwise explicitly use pip's
 `--force-reinstall` for that exact verified artifact, then run `pip check`.
 Never infer source equality from a version string alone.

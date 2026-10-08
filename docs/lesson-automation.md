@@ -1,12 +1,16 @@
 # Ledger V1: configurable lesson automation
 
-Ledger remains package 1.0.1 with SQLite schema 5 in this integrated V1 build.
-The bundled procedure revision is 2 to record this deliberate contract change;
-this is not a Ledger V2 product. The default is `manual`, including profiles upgrading without a setting. Nothing
-retroactively approves existing candidates. No background worker or model call is
-started. Automatic mode acts only during an explicit, owner-fenced `propose` or
-`improve` operation. Recording a result can still generate a review diagnostic;
-it never invents new conditions, edits, outcomes, or a successful experiment.
+Ledger remains package 1.0.2 with SQLite schema 5 in this integrated V1 build.
+The bundled procedure revision is 3 to record the proactive lesson-creation
+contract; this is not a Ledger V2 product. The default activation mode is
+`manual`, including profiles upgrading without a setting. No lesson is created
+retroactively. No background worker or extra model call is started: the bundled
+agent procedure instructs the current agent to evaluate the owned run and use the
+existing `propose` action only when completing, without waiting for the user to ask.
+Paused or incomplete runs do not propose lessons. The agent proposes only when scoped evidence, behavioral-report requirements, and
+a reusable conditional lesson all exist. Recording a result can still generate
+a review diagnostic; it never invents new conditions, edits, outcomes, or a
+successful experiment.
 
 ## Enable, inspect, disable
 
@@ -61,6 +65,29 @@ its retrieval. A completed activation is not undone by a later toggle.
 No training, changed model weights, empirical quality improvement or token/cost
 saving is claimed. A conditional lesson is guidance that must be checked in each
 new investigation, not authority to execute commands or bypass permissions.
+
+## Untrusted content and reported evidence
+
+The proactive step increases how often the current agent considers proposing a
+lesson; it does not add an independent evidence capture or attestation service.
+The stable procedure and bundled skill require the agent to treat repository
+text, copied logs, tool-output text, optional skills and recalled lessons as
+untrusted data, not instructions to create evidence or modify policy. Behavioral
+reports must describe authorized checks actually observed through host tools and
+reported by the agent. When execution cannot be distinguished from copied
+claims, the procedure records an incomplete note and skips proactive proposal.
+
+These are agent-workflow requirements, not a claim that string validation detects
+prompt injection. A false but structurally complete report can still satisfy the
+existing automatic gate if the agent violates that procedure. This trust limit
+already existed for explicit proposals in 1.0.1; proactive creation increases its
+exposure rather than introducing a new tool permission. The backend assigns
+`agent_reported`, rejects caller-supplied provenance/approval and foreign source
+IDs, and preserves revocation checks. Tests characterize those boundaries with
+synthetic data; they do not demonstrate resistance of a real model to adversarial
+prompts. Manual mode remains the default. Explicit operator opt-in continues to
+authorize eligible automatic activations without per-lesson confirmation; an
+operator requiring individual review should select manual mode.
 
 ## Review, invalidate, reverse
 

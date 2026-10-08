@@ -1,4 +1,4 @@
-# Hermes Review Ledger V1 (1.0.1)
+# Hermes Review Ledger V1 (1.0.2)
 
 <p align="center">
   <img src="docs/assets/ledger-pixel.gif" width="640" height="360" alt="Ledger, a green-haired, purple-suited pixel character, laughing and holding a playing card. Silent animation." />
@@ -10,7 +10,7 @@ The animation is silent. [View the still image](docs/assets/ledger-pixel.png).
 
 **V1 optional context pilot:** [installation, exact defaults, operator/agent workflow, version mapping, limitations and evaluation](docs/v15-pilot.md). The original workflow remains available with pilot features disabled.
 
-A small native Hermes plugin for persistent, profile-local GitHub PR investigations and operator-approved conditional investigation lessons.
+A small native Hermes plugin for persistent, profile-local GitHub PR investigations and conditional investigation lessons. Its bundled agent workflow proactively proposes evidence-backed lessons; the configured bounded policy activates only eligible proposals.
 
 Hermes investigates code using its authorized host tools. Review Ledger records state and agent-reported evidence, coordinates a single writer, and helps retrieve relevant questions. It does not execute repository commands, independently observe tests, train models, or establish that a reviewer became better.
 
@@ -41,15 +41,16 @@ Relevant public sources:
 
 Follow the [complete install and update guide](docs/installation.md), including
 clean virtual environments, offline dependencies, backups and rollback limits.
-V1 is package/plugin **1.0.1**. Earlier 0.x builds were private development
+V1 is package/plugin **1.0.2**. Earlier 0.x builds were private development
 iterations, not public releases; historical records retain their original labels.
-Version **1.0.1** is a bugfix patch within Ledger V1: it distinguishes the corrected
-package from 1.0.0 for installation and runtime snapshot identity.
-SQLite schema is **5** after the additive frozen-reference increment; protocol is **2** after the deliberate lesson-policy update. Product identity does not reset either counter.
+Version **1.0.1** was a bugfix patch within Ledger V1. Version **1.0.2** adds
+proactive conditional-lesson creation instructions to the bundled agent workflow.
+SQLite schema remains **5**; the immutable procedure advances to **3** for this
+contract update. Product identity does not reset the schema or policy counters.
 
 Frozen review/comment references reuse existing findings and the Context Engine;
-see [review references](docs/review-references.md). Configurable automatic lesson
-activation follows the separate [audited policy](docs/lesson-automation.md).
+see [review references](docs/review-references.md). Proactive lesson creation
+and bounded automatic activation follow the [audited policy](docs/lesson-automation.md).
 
 Choose an existing Hermes profile and stop its Hermes sessions before changing
 plugin code. The installer requires an absolute directory containing an existing
@@ -99,7 +100,7 @@ bundled skill together. If the console command is not on PATH, use
 `python -m review_ledger` with that virtual environment's interpreter.
 
 A locally built wheel can be installed with
-`python -m pip install /path/to/hermes_review_ledger-1.0.1-py3-none-any.whl`.
+`python -m pip install /path/to/hermes_review_ledger-1.0.2-py3-none-any.whl`.
 For fully offline installation, prepare the runtime dependency wheels first and
 use `--no-index --find-links /path/to/wheelhouse` (see the guide).
 `--no-deps` is only appropriate when the required PyYAML is already installed. Wheels and source distributions are
@@ -247,7 +248,7 @@ a self-improvement loop. The separate optional critic is described below.
 
 ### Optional claim critic
 
-Integrated version 1.0.1 includes one optional critic tool, `ledger_critic`, with `prepare`, `run`, `status` and
+Integrated version 1.0.2 includes one optional critic tool, `ledger_critic`, with `prepare`, `run`, `status` and
 `assess` actions. The critic is disabled by default. Preparation and reading are
 local; only explicit execution reaches the optional provider boundary. The
 pinned Hermes host cannot publicly prove its complete effective egress/fallback
@@ -354,12 +355,13 @@ The [original bundled skill](skills/review-ledger/SKILL.md) documents all operat
 
 Learning remains within one repository and one resolved profile.
 
-1. The agent proposes a conditional question with application conditions, exclusions, suggested investigation, tags/symbols and eligible observation sources. This is a `candidate`.
-2. In default manual mode, a local operator inspects and explicitly approves that exact version. Explicit automatic mode can activate eligible proposals under the [bounded policy](docs/lesson-automation.md).
-3. `ledger_recall` returns up to five eligible active versions or compact `lesson_references` with `version_id` and `required_context_chars`. Selection is deterministic, bounded, and based on terms, tags and symbols. SQL filtering and ranking both use Unicode NFC/casefold without changing stored text. No embeddings, probabilities or model calls are used.
-4. Before applying one, `ledger_lesson(action="use")` records its exact version, applicability and explanation and rechecks eligibility.
-5. `ledger_lesson(action="result")` records usefulness, behavioral result, execution blocking and a separate explanation. Refutation can be useful. Blocked execution is inconclusive. Unused lessons receive no invented outcome.
-6. The operator can suspend or restrict a version. A revision creates a new candidate, preserving all prior versions and exact-version uses. Approving a newer version retires the old one without rewriting ongoing history.
+1. When an owned investigation is ready to complete, the bundled agent workflow proactively checks once for a reusable conditional lesson and calls `ledger_lesson(action="propose")` when current-run evidence passes the eligibility gates. If the run is being paused or remains incomplete, no lesson is proposed. No background worker or extra model call is started.
+2. A proposal includes a conditional question, application conditions, exclusions, suggested investigation, tags/symbols and eligible observation sources. This is a `candidate`; explicit automatic mode activates only proposals accepted by the bounded policy.
+3. In default manual mode, a local operator inspects and explicitly approves that exact version. Explicit automatic mode can activate eligible proposals under the [bounded policy](docs/lesson-automation.md).
+4. `ledger_recall` returns up to five eligible active versions or compact `lesson_references` with `version_id` and `required_context_chars`. Selection is deterministic, bounded, and based on terms, tags and symbols. SQL filtering and ranking both use Unicode NFC/casefold without changing stored text. No embeddings, probabilities or model calls are used.
+5. Before applying one, `ledger_lesson(action="use")` records its exact version, applicability and explanation and rechecks eligibility.
+6. `ledger_lesson(action="result")` records usefulness, behavioral result, execution blocking and a separate explanation. Refutation can be useful. Blocked execution is inconclusive. Unused lessons receive no invented outcome.
+7. The operator can suspend or restrict a version. A revision creates a new candidate, preserving all prior versions and exact-version uses. Approving a newer version retires the old one without rewriting ongoing history.
 
 ### Retrieval within a fixed context budget
 
@@ -539,7 +541,7 @@ The suite covers Unicode/spaced profile paths, real filesystem cleanup, determin
 
 Actual validation results are recorded only after running the final source. Do not infer coverage for an OS without an execution report from its real native runner. Live GitHub authentication, a real user PR pilot, and a full interactive model conversation require separate validation. The plugin does not claim measured improvement in review quality.
 
-The validation totals and actual command output are recorded in the accompanying implementation report and native CI artifacts, each tied to the source revision. Missing, pending, failed, or skipped native runs are never counted as passes. Earlier 0.1.0 validation reported 7 tools and 0 hooks with no findings; that result is historical, not validation of the integrated nine-tool release. The earlier `hermes plugins validate` pass included manifest/registration agreement and its no-core-override check. New validation results must be tied to integrated 1.0.1; the old native results do not certify this extension. Package tests build and install the source distribution and complete installer wheel locally; artifacts are not published.
+The validation totals and actual command output are recorded in the accompanying implementation report and native CI artifacts, each tied to the source revision. Missing, pending, failed, or skipped native runs are never counted as passes. Earlier 0.1.0 validation reported 7 tools and 0 hooks with no findings; that result is historical, not validation of the integrated nine-tool release. The earlier `hermes plugins validate` pass included manifest/registration agreement and its no-core-override check. New validation results must be tied to integrated 1.0.2; the old native results do not certify this extension. Package tests build and install the source distribution and complete installer wheel locally; artifacts are not published.
 
 ## Source layout and licensing
 

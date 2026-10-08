@@ -92,7 +92,7 @@ is performed.
 
 ## Upgrade and measurement
 
-Package identity remains Ledger V1 / `1.0.1`; the bundled protocol is 2 for the explicitly authorized lesson-automation contract.
+Package identity remains Ledger V1 / `1.0.2`; the bundled procedure is 3 for proactive conditional lesson creation.
 SQLite schema becomes **5** via additive `005_review_references.sql`. Migrations
 001–004 remain byte-identical. The migration preserves old data and receipts,
 checks historical schema layout/profile identity, and is transactional. Stop
