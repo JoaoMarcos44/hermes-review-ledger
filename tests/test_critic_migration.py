@@ -95,7 +95,8 @@ def test_concurrent_v2_initialization(v2_store):
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
-def test_backup_restores_all_adaptive_and_critic_tables(ledger, opened, actor, observed, lesson_data, tmp_path):
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n"])
+def test_backup_restores_all_adaptive_and_critic_tables(ledger, opened, actor, observed, lesson_data, tmp_path, line_ending):
     fid = ledger.record(REPO, opened["id"], actor, 1, "finding", {"claim": "Synthetic claim"}, "finding")["finding_id"]
     aid = ledger.record(REPO, opened["id"], actor, 1, "assessment", {
         "finding_id": fid, "state": "supported", "basis": "behavior", "rationale": "Synthetic check",
@@ -128,7 +129,8 @@ def test_backup_restores_all_adaptive_and_critic_tables(ledger, opened, actor, o
     package = tmp_path / "snapshot-example"
     package.mkdir()
     (package / "SKILL.md").write_text("---\nname: example\ndescription: Synthetic retry checks\n---\nPreserve full instructions.\n")
-    (package / "notes.md").write_text("Synthetic immutable referenced bytes: é🔬\n")
+    expected_reference = "Synthetic immutable referenced bytes: é🔬" + line_ending
+    (package / "notes.md").write_bytes(expected_reference.encode("utf-8"))
     skill = Skills(ledger.store).register(scope, package, qualified_id="synthetic/example",
                                          references=["notes.md"], approved=True, enabled=True)
     Context(ledger, budget=24000, skills_enabled=True).prepare(REPO, opened["id"], actor, query="retry")
@@ -147,4 +149,4 @@ def test_backup_restores_all_adaptive_and_critic_tables(ledger, opened, actor, o
             assert rows == [tuple(r) for r in copy.execute(f"SELECT * FROM {table} ORDER BY rowid")]
         assert copy.execute("PRAGMA foreign_key_check").fetchall() == []
         assert Skills.version(copy, scope, skill["id"], require_enabled=True)["resources"] == {
-            "notes.md": "Synthetic immutable referenced bytes: é🔬\n"}
+            "notes.md": expected_reference}

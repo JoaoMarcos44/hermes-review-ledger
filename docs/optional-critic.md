@@ -1,4 +1,4 @@
-# Optional claim critic (V1 / 1.0.0)
+# Optional claim critic (V1 / 1.0.1)
 
 The critic examines up to three selected, recorded review claims. It does not
 independently redo the PR review or promise to detect omitted defects. An opinion

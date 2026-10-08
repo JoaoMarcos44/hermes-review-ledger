@@ -344,7 +344,7 @@ def test_v1_identity_and_distribution_metadata(installed_package):
         [package.python, "-I", "-m", "review_ledger", "--version"],
         [package.console, "--version"],
     ):
-        assert _run(command, cwd=package.outside, env=package.environment).strip() == "1.0.0"
+        assert _run(command, cwd=package.outside, env=package.environment).strip() == "1.0.1"
     script = """
 from importlib.metadata import version
 import json
@@ -354,14 +354,15 @@ from review_ledger.protocol import VERSION
 print(json.dumps([version('hermes-review-ledger'), __version__, SCHEMA_VERSION, VERSION]))
 """
     assert json.loads(_run([package.python, "-I", "-c", script],
-                          cwd=package.outside, env=package.environment)) == ["1.0.0", "1.0.0", 5, "2"]
-    assert "version: 1.0.0\n" in (package.source / "plugin.yaml").read_text()
+                          cwd=package.outside, env=package.environment)) == ["1.0.1", "1.0.1", 5, "2"]
+    assert "version: 1.0.1\n" in (package.source / "plugin.yaml").read_text()
     assert (package.source / "docs" / "installation.md").is_file()
     assert (package.source / "scripts" / "benchmark_compression.py").is_file()
 
 
-def test_installed_cli_upgrades_private_04_fixture_and_preserves_data(installed_package, tmp_path):
-    """An owned synthetic 0.4 payload exercises the existing manifest format.
+@pytest.mark.parametrize("old_version", ["0.4.0", "1.0.0"])
+def test_installed_cli_upgrades_owned_prior_versions_and_preserves_data(installed_package, tmp_path, old_version):
+    """Owned synthetic prior-version payloads exercise the existing manifest format.
 
     This is an installer fixture, not a claim to reproduce an historical release
     or to validate a database migration (covered by schema tests separately).
@@ -372,9 +373,9 @@ def test_installed_cli_upgrades_private_04_fixture_and_preserves_data(installed_
     target = profile / "plugins" / "review-ledger"
     target.mkdir(parents=True)
     old_payload = {
-        "__init__.py": b"# Synthetic private 0.4 plugin fixture\n",
-        "plugin.yaml": b"name: review-ledger\nversion: 0.4.0\n",
-        "review_ledger/__init__.py": b'__version__ = "0.4.0"\n',
+        "__init__.py": f"# Synthetic {old_version} plugin fixture\n".encode(),
+        "plugin.yaml": f"name: review-ledger\nversion: {old_version}\n".encode(),
+        "review_ledger/__init__.py": f'__version__ = "{old_version}"\n'.encode(),
     }
     for name, data in old_payload.items():
         path = target / name
@@ -382,7 +383,7 @@ def test_installed_cli_upgrades_private_04_fixture_and_preserves_data(installed_
         path.write_bytes(data)
     marker = target / ".review-ledger-install.json"
     marker.write_text(json.dumps({
-        "installer": "hermes-review-ledger", "format": 1, "version": "0.4.0",
+        "installer": "hermes-review-ledger", "format": 1, "version": old_version,
         "files": {name: _digest(data) for name, data in old_payload.items()},
     }), encoding="utf-8")
     data_dir = profile / "plugin-data" / "review-ledger"
@@ -396,13 +397,106 @@ def test_installed_cli_upgrades_private_04_fixture_and_preserves_data(installed_
     assert '"state": "upgraded"' in output
     for name, digest in package.expected_hashes.items():
         assert _digest((target / name).read_bytes()) == digest
-    assert json.loads(marker.read_text())["version"] == "1.0.0"
+    assert json.loads(marker.read_text())["version"] == "1.0.1"
     status = _run([package.console, "status", "--profile-dir", profile],
                   cwd=package.outside, env=package.environment)
-    assert json.loads(status)["version"] == "1.0.0"
+    assert json.loads(status)["version"] == "1.0.1"
     _run([package.console, "uninstall", "--profile-dir", profile],
          cwd=package.outside, env=package.environment)
     assert not target.exists()
     assert kept.read_bytes() == previous
     assert (profile / "config.yaml").read_bytes() == CONFIG
     _unchanged_default_profile(package.environment)
+
+
+def test_rebuild_uses_current_source_and_removes_stale_build_files(tmp_path):
+    environment = _environment(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source = tmp_path / "source"
+    shutil.copytree(ROOT, source, ignore=shutil.ignore_patterns(
+        ".git", "build", "dist", "*.egg-info", "__pycache__", ".pytest_cache", "_plugin_payload",
+    ))
+    output = tmp_path / "dist"
+    command = [sys.executable, "-I", "-X", "utf8", "-m", "build", "--wheel",
+               "--no-isolation", "--outdir", output, source]
+    _run(command, cwd=outside, env=environment)
+    module = source / "review_ledger" / "__init__.py"
+    original_time = module.stat().st_mtime_ns
+    revised = module.read_bytes() + b"\n# Synthetic same-version reviewed revision\n"
+    module.write_bytes(revised)
+    os.utime(module, ns=(original_time - 60_000_000_000, original_time - 60_000_000_000))
+    # A module removed by an intervening source update can remain in build/lib.
+    stale = source / "build" / "lib" / "review_ledger" / "obsolete_module.py"
+    assert stale.parent.is_dir()
+    stale.write_bytes(b"# Synthetic removed historical module\n")
+    _run(command, cwd=outside, env=environment)
+    wheels = list(output.glob("*.whl"))
+    assert len(wheels) == 1
+    with zipfile.ZipFile(wheels[0]) as archive:
+        assert archive.read("review_ledger/__init__.py") == revised
+        assert archive.read(PAYLOAD_PREFIX + "review_ledger/__init__.py") == revised
+        assert not any(name.endswith("obsolete_module.py") for name in archive.namelist())
+
+
+@pytest.mark.parametrize("case", ["source", "source-alias", "package-alias", "build-ancestor-alias"])
+def test_build_cleanup_refuses_source_overlap_and_links(tmp_path, case):
+    environment = _environment(tmp_path)
+    source = tmp_path / "source"
+    shutil.copytree(ROOT, source, ignore=shutil.ignore_patterns(
+        ".git", "build", "dist", "*.egg-info", "__pycache__", ".pytest_cache", "_plugin_payload",
+    ))
+    outside = tmp_path / "preserved"
+    outside.mkdir()
+    sentinel = outside / "keep.txt"
+    sentinel.write_bytes(b"unrelated operator data")
+    output = source
+    if case != "source":
+        output = tmp_path / "output"
+        link, target = output, source
+        if case == "package-alias":
+            output.mkdir()
+            link, target = output / "review_ledger", outside
+        elif case == "build-ancestor-alias":
+            link, target = output, outside
+            output = output / "nested"
+            kept = outside / "nested" / "review_ledger" / "keep.txt"
+            kept.parent.mkdir(parents=True)
+            kept.write_bytes(b"unrelated build-ancestor target")
+        if os.name == "nt":
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                           check=True, capture_output=True)
+        else:
+            link.symlink_to(target, target_is_directory=True)
+    before = {p.relative_to(source): p.read_bytes() for p in (source / "review_ledger").rglob("*.py")}
+    result = subprocess.run(
+        [sys.executable, "-I", "-X", "utf8", str(source / "setup.py"),
+         "build_py", "--build-lib", str(output)],
+        cwd=source, env=environment, text=True, encoding="utf-8", capture_output=True,
+        timeout=30, check=False,
+    )
+    assert result.returncode != 0
+    assert "Build output must not" in result.stderr
+    assert {p.relative_to(source): p.read_bytes() for p in (source / "review_ledger").rglob("*.py")} == before
+    assert sentinel.read_bytes() == b"unrelated operator data"
+    if case == "build-ancestor-alias":
+        assert kept.read_bytes() == b"unrelated build-ancestor target"
+
+
+def test_build_refuses_an_incomplete_runtime_payload(tmp_path):
+    environment = _environment(tmp_path)
+    source = tmp_path / "source"
+    shutil.copytree(ROOT, source, ignore=shutil.ignore_patterns(
+        ".git", "build", "dist", "*.egg-info", "__pycache__", ".pytest_cache", "_plugin_payload",
+    ))
+    (source / "review_ledger" / "storage.py").unlink()
+    output = tmp_path / "dist"
+    result = subprocess.run(
+        [sys.executable, "-I", "-X", "utf8", "-m", "build", "--wheel",
+         "--no-isolation", "--outdir", str(output), str(source)],
+        cwd=tmp_path, env=environment, text=True, encoding="utf-8", capture_output=True,
+        timeout=30, check=False,
+    )
+    assert result.returncode != 0
+    assert "Incomplete plugin payload" in result.stderr
+    assert not list(output.glob("*.whl"))

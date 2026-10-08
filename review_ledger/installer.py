@@ -17,6 +17,7 @@ import sys
 import tempfile
 
 from . import __version__
+from .payload_manifest import PayloadError, read_payload
 
 
 NAME = "review-ledger"
@@ -138,30 +139,10 @@ def _payload() -> dict[str, bytes]:
     root = package / "_plugin_payload"
     if not root.is_dir():
         root = package.parent  # A complete source checkout or source distribution.
-    names = ["__init__.py", "plugin.yaml"]
-    names += [p.relative_to(root).as_posix() for p in (root / "review_ledger").glob("*.py")]
-    names += [p.relative_to(root).as_posix() for p in (root / "review_ledger" / "migrations").glob("*.sql")]
-    names += [p.relative_to(root).as_posix() for p in (root / "skills").rglob("*.md")]
-    names += [p.relative_to(root).as_posix() for p in (root / "review_ledger" / "resources").glob("*.md")]
-    names += [p.relative_to(root).as_posix() for p in (root / "review_ledger" / "prompts").glob("*.md")]
-    required = {"review_ledger/tools.py", "review_ledger/migrations/001_initial.sql",
-                "skills/review-ledger/SKILL.md", "review_ledger/resources/protocol.md", "review_ledger/critic.py",
-                "review_ledger/critic_hermes.py", "review_ledger/critic_contract.py",
-                "review_ledger/prompts/critic_v1.md", "review_ledger/migrations/004_critic.sql", "review_ledger/migrations/005_review_references.sql",
-                "review_ledger/references.py"}
-    if not required.issubset(names):
-        raise InstallError("Incomplete plugin payload; reinstall the package or use the complete source checkout")
-    payload = {}
-    for name in sorted(names):
-        path = root / name
-        # Reject links in payload directories as well as in its leaf files.
-        for parent in path.parents:
-            _plain(parent, directory=True)
-            if parent == root:
-                break
-        _plain(path)
-        payload[name] = path.read_bytes()
-    return payload
+    try:
+        return read_payload(root)
+    except PayloadError as exc:
+        raise InstallError(str(exc)) from exc
 
 
 def _manifest(payload: dict[str, bytes]) -> dict:

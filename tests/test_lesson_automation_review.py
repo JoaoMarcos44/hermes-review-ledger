@@ -79,6 +79,32 @@ def test_nonbehavioral_evidence_never_autoapproves(ledger, opened, actor, lesson
         assert rows(ledger, "lesson_versions") == []
 
 
+INCOMPLETE_BEHAVIOR_REPORTS = [
+    {"kind": "note"},
+    {"kind": "inspection"},
+    {"details": ""},
+    {"details": " \t\r\n "},
+    {"details": "\u00a0\u2003"},
+    {"environment": None},
+]
+
+
+@pytest.mark.parametrize("incomplete", INCOMPLETE_BEHAVIOR_REPORTS)
+def test_initial_automatic_support_requires_complete_behavior_report(
+        ledger, opened, actor, lesson_data, observation_data, incomplete):
+    learning, scope = automatic(ledger), ledger.scope(REPO)
+    source = ledger.record(REPO, opened["id"], actor, 1, "observation",
+                           {**observation_data, **incomplete}, "incomplete-behavior")["observation_id"]
+    candidate = propose(learning, ledger, opened, actor, lesson_data, "incomplete-initial",
+                        sources=[{"observation_id": source, "relation": "supports"}])
+    assert candidate["state"] == "candidate"
+    assert candidate["automation"]["reason"] == "current_run_behavioral_support_required"
+    assert rows(ledger, "lesson_versions")[0]["approved_at"] is None
+    # This is an automatic-policy gate, not a change to manual review semantics.
+    learning.operator(scope, candidate["version_id"], "approve", "Synthetic manual review", "manual-incomplete")
+    assert version(learning, scope, candidate["version_id"])["state"] == "active"
+
+
 def test_contradicting_source_is_manual_even_with_behavior(ledger, opened, actor, lesson_data):
     learning, scope = automatic(ledger), ledger.scope(REPO)
     candidate = propose(learning, ledger, opened, actor, lesson_data, "contradiction",
@@ -200,6 +226,65 @@ def test_concrete_improvement_approves_only_after_full_provenance_exists(ledger,
     assert inspected["status"] == "applied" and inspected["eligible_now"] is True
     assert set(inspected["source_outcome_ids"]) == set(data["source_outcome_ids"])
     assert improvements.propose(scope, run["id"], actor, run["generation"], data, "concrete-improvement") == result
+
+
+@pytest.mark.parametrize("incomplete", INCOMPLETE_BEHAVIOR_REPORTS)
+def test_automatic_improvement_evaluation_requires_complete_behavior_report(
+        ledger, opened, actor, lesson_data, observation_data, synthetic_snapshot, incomplete):
+    learning, scope, target, run, data, _ = _improvement_fixture(
+        ledger, opened, actor, lesson_data, observation_data, synthetic_snapshot)
+    evaluation = ledger.record(REPO, run["id"], actor, run["generation"], "observation",
+                               {**observation_data, **incomplete}, "incomplete-evaluation")["observation_id"]
+    data["evaluation_references"] = [evaluation]
+    result = Improvements(ledger.store, automation_mode="automatic").propose(
+        scope, run["id"], actor, run["generation"], data, "incomplete-improvement-evaluation")
+    assert result["state"] == "candidate"
+    assert result["automation"]["reason"] == "current_run_evaluation_required"
+    assert version(learning, scope, target)["state"] == "active"
+
+
+@pytest.mark.parametrize("incomplete", INCOMPLETE_BEHAVIOR_REPORTS)
+def test_automatic_improvement_outcome_support_requires_complete_behavior_report(
+        ledger, opened, actor, lesson_data, observation_data, synthetic_snapshot, incomplete):
+    learning, scope, target, run, data, _ = _improvement_fixture(
+        ledger, opened, actor, lesson_data, {**observation_data, **incomplete}, synthetic_snapshot)
+    evaluation = ledger.record(REPO, run["id"], actor, run["generation"], "observation",
+                               observation_data, "complete-evaluation")["observation_id"]
+    data["evaluation_references"] = [evaluation]
+    result = Improvements(ledger.store, automation_mode="automatic").propose(
+        scope, run["id"], actor, run["generation"], data, "incomplete-improvement-support")
+    assert result["state"] == "candidate"
+    assert result["automation"]["reason"] == "behavioral_outcome_support_required"
+    assert version(learning, scope, target)["state"] == "active"
+
+
+def test_automatic_improvement_evaluation_must_be_from_current_run(
+        ledger, opened, actor, lesson_data, observation_data, synthetic_snapshot):
+    learning, scope, target, run, data, evidence = _improvement_fixture(
+        ledger, opened, actor, lesson_data, observation_data, synthetic_snapshot)
+    data["evaluation_references"] = [evidence[0]]
+    result = Improvements(ledger.store, automation_mode="automatic").propose(
+        scope, run["id"], actor, run["generation"], data, "historical-evaluation-only")
+    assert result["state"] == "candidate"
+    assert result["automation"]["reason"] == "current_run_evaluation_required"
+    assert version(learning, scope, target)["state"] == "active"
+
+
+@pytest.mark.parametrize(("outcome", "behavioral_result"), [
+    ("behavior_failure", "failure_observed"),
+    ("behavior_passed", "no_failure_observed"),
+    ("hypothesis_refuted", "hypothesis_refuted"),
+])
+def test_complete_matching_behavioral_reports_still_allow_automatic_improvements(
+        ledger, opened, actor, lesson_data, observation_data, synthetic_snapshot, outcome, behavioral_result):
+    learning, scope, target, run, data, _ = _improvement_fixture(
+        ledger, opened, actor, lesson_data, {**observation_data, "outcome": outcome}, synthetic_snapshot,
+        behavioral_result=behavioral_result)
+    result = Improvements(ledger.store, automation_mode="automatic").propose(
+        scope, run["id"], actor, run["generation"], data, "complete-matching-behavior")
+    assert result["state"] == "active"
+    assert result["automation"]["activated"] is True
+    assert version(learning, scope, target)["state"] == "retired"
 
 
 @pytest.mark.parametrize("limitation", ["same_pr", "blocked", "no_support", "no_evaluation"])

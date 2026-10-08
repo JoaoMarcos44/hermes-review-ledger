@@ -1,5 +1,6 @@
 """Synthetic explicit local skill imports; no host, network, or model involved."""
 from pathlib import Path
+from contextlib import closing
 import sqlite3
 
 import pytest
@@ -125,15 +126,18 @@ def test_snapshot_hash_and_missing_resource(registry, package):
         skills.load(scope, skill["id"])
 
 
-def test_import_dedup_and_backup_contains_text(registry, package):
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n"])
+def test_import_dedup_and_backup_contains_text(registry, package, line_ending):
     skills, scope = registry
+    expected = "Never omit a crucial exclusion." + line_ending
+    (package / "references" / "notes.md").write_bytes(expected.encode("utf-8"))
     skill = add(registry, package, references=["references/notes.md"], enabled=True)
     assert add(registry, package, references=["references/notes.md"])["id"] == skill["id"]
     destination = package.parent / "copy.sqlite3"
-    with skills.store.connect() as conn, sqlite3.connect(destination) as copy:
+    with skills.store.connect() as conn, closing(sqlite3.connect(destination)) as copy:
         conn.backup(copy)
-    with sqlite3.connect(destination) as copy:
-        assert copy.execute("SELECT content FROM optional_skill_resources").fetchone()[0] == "Never omit a crucial exclusion.\n"
+    with closing(sqlite3.connect(destination)) as copy:
+        assert copy.execute("SELECT content FROM optional_skill_resources").fetchone()[0] == expected
         assert copy.execute("SELECT content_digest FROM optional_skill_versions").fetchone()[0] == skill["content_digest"]
 
 

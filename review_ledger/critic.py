@@ -366,7 +366,7 @@ class Critic:
             if state in ("supported", "refuted"):
                 if not observations or basis == "none" or any(o["outcome"] not in ELIGIBLE_OUTCOMES for o in observations):
                     raise LedgerError("ineligible_evidence", "Missing, incomplete or blocked checks cannot support/refute an objection")
-                if basis == "behavior" and any(o["kind"] != "test" or o["outcome"] == "inspection" or not o["details"] or not o["environment"] for o in observations):
+                if basis == "behavior" and any(o["kind"] != "test" or o["outcome"] == "inspection" or not o["details"].strip() or not (o["environment"] or "").strip() for o in observations):
                     raise LedgerError("incomplete_behavior_report", "Behavioral verification needs recorded test details and environment")
             conn.execute("UPDATE critic_assessments SET freshness='historical' WHERE objection_id=? AND freshness='current'", (objection_id,))
             ident = new_id("criticassessment")

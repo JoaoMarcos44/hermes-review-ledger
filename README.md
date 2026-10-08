@@ -1,4 +1,4 @@
-# Hermes Review Ledger V1 (1.0.0)
+# Hermes Review Ledger V1 (1.0.1)
 
 <p align="center">
   <img src="docs/assets/ledger-pixel.gif" width="640" height="360" alt="Ledger, a green-haired, purple-suited pixel character, laughing and holding a playing card. Silent animation." />
@@ -41,8 +41,10 @@ Relevant public sources:
 
 Follow the [complete install and update guide](docs/installation.md), including
 clean virtual environments, offline dependencies, backups and rollback limits.
-V1 is package/plugin **1.0.0**. Earlier 0.x builds were private development
+V1 is package/plugin **1.0.1**. Earlier 0.x builds were private development
 iterations, not public releases; historical records retain their original labels.
+Version **1.0.1** is a bugfix patch within Ledger V1: it distinguishes the corrected
+package from 1.0.0 for installation and runtime snapshot identity.
 SQLite schema is **5** after the additive frozen-reference increment; protocol is **2** after the deliberate lesson-policy update. Product identity does not reset either counter.
 
 Frozen review/comment references reuse existing findings and the Context Engine;
@@ -97,7 +99,7 @@ bundled skill together. If the console command is not on PATH, use
 `python -m review_ledger` with that virtual environment's interpreter.
 
 A locally built wheel can be installed with
-`python -m pip install /path/to/hermes_review_ledger-1.0.0-py3-none-any.whl`.
+`python -m pip install /path/to/hermes_review_ledger-1.0.1-py3-none-any.whl`.
 For fully offline installation, prepare the runtime dependency wheels first and
 use `--no-index --find-links /path/to/wheelhouse` (see the guide).
 `--no-deps` is only appropriate when the required PyYAML is already installed. Wheels and source distributions are
@@ -226,7 +228,7 @@ a self-improvement loop. The separate optional critic is described below.
 
 ### Optional claim critic
 
-Integrated version 1.0.0 includes one optional critic tool, `ledger_critic`, with `prepare`, `run`, `status` and
+Integrated version 1.0.1 includes one optional critic tool, `ledger_critic`, with `prepare`, `run`, `status` and
 `assess` actions. The critic is disabled by default. Preparation and reading are
 local; only explicit execution reaches the optional provider boundary. The
 pinned Hermes host cannot publicly prove its complete effective egress/fallback
@@ -467,7 +469,7 @@ Create a consistent SQLite backup:
 hermes review-ledger backup
 ```
 
-The command uses `sqlite3.Connection.backup`, explicitly sets the private backup destination to DELETE journaling without changing the source, restores the produced bytes into an independent temporary directory, and checks integrity, foreign keys and schema version before publishing the backup under the plugin's `backups/` directory. Every connection is explicitly closed before temporary-directory cleanup or file publication, including on Windows where open file handles can prevent those operations. Its result includes `restore_verified: true` only after those checks. Backups contain the database; optional artifact files are not bundled. Preserve the artifact directory separately if those attachments matter. No automated restore/import or data-delete operation is provided.
+The command uses `sqlite3.Connection.backup`, explicitly sets the private backup destination to DELETE journaling without changing the source, restores the produced bytes into an independent temporary directory, and checks integrity, foreign keys, schema/profile identity and immutable skill resources in that restored snapshot before publishing the backup under the plugin's `backups/` directory. Every connection is explicitly closed before temporary-directory cleanup or file publication, including on Windows where open file handles can prevent those operations. Its result includes `restore_verified: true` only after those checks. Backups contain the database; optional artifact files are not bundled. Preserve the artifact directory separately if those attachments matter. No automated restore/import or data-delete operation is provided.
 
 The SQLite backup copy phase has a ten-second progress deadline. Opening the database, copying the restored file, and running integrity checks are outside that deadline; this is not a total wall-clock guarantee. Optional artifact staging is cleaned up after ordinary failed operations or idempotent retries; an abrupt process termination can leave an unreferenced bounded artifact file. There is no background cleanup process.
 
@@ -518,7 +520,7 @@ The suite covers Unicode/spaced profile paths, real filesystem cleanup, determin
 
 Actual validation results are recorded only after running the final source. Do not infer coverage for an OS without an execution report from its real native runner. Live GitHub authentication, a real user PR pilot, and a full interactive model conversation require separate validation. The plugin does not claim measured improvement in review quality.
 
-The validation totals and actual command output are recorded in the accompanying implementation report and native CI artifacts, each tied to the source revision. Missing, pending, failed, or skipped native runs are never counted as passes. Earlier 0.1.0 validation reported 7 tools and 0 hooks with no findings; that result is historical, not validation of the integrated nine-tool release. The earlier `hermes plugins validate` pass included manifest/registration agreement and its no-core-override check. New validation results must be tied to integrated 1.0.0; the old native results do not certify this extension. Package tests build and install the source distribution and complete installer wheel locally; artifacts are not published.
+The validation totals and actual command output are recorded in the accompanying implementation report and native CI artifacts, each tied to the source revision. Missing, pending, failed, or skipped native runs are never counted as passes. Earlier 0.1.0 validation reported 7 tools and 0 hooks with no findings; that result is historical, not validation of the integrated nine-tool release. The earlier `hermes plugins validate` pass included manifest/registration agreement and its no-core-override check. New validation results must be tied to integrated 1.0.1; the old native results do not certify this extension. Package tests build and install the source distribution and complete installer wheel locally; artifacts are not published.
 
 ## Source layout and licensing
 

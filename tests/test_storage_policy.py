@@ -263,7 +263,15 @@ def test_delete_backup_with_normal_writer_contention(tmp_path, monkeypatch):
             backup = pool.submit(store.backup)
             assert backup_started.wait(timeout=10)
             release.set()
-            writer.result(timeout=15)
+            try:
+                writer.result(timeout=15)
+                retry = False
+            except LedgerError as exc:
+                # DELETE readers can outlast this deliberately short commit
+                # budget, especially on slower native filesystems. Bounded
+                # backpressure with full rollback is part of the contract.
+                assert exc.code == "storage_busy"
+                retry = True
             result = backup.result(timeout=15)
         finally:
             release.set()
@@ -272,8 +280,13 @@ def test_delete_backup_with_normal_writer_contention(tmp_path, monkeypatch):
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
         # Online backups can consistently observe either side of a commit.
-        assert connection.execute("SELECT value FROM ledger_meta WHERE key='synthetic-marker'").fetchall() in (
-            [], [("committed",)],
-        )
+        rows = connection.execute("SELECT value FROM ledger_meta WHERE key='synthetic-marker'").fetchall()
+        assert rows in ([], [("committed",)])
+        if retry:
+            assert rows == []  # Never publish a writer's rolled-back value.
+    if retry:
+        with store.connect() as connection:
+            assert connection.execute("SELECT value FROM ledger_meta WHERE key='synthetic-marker'").fetchall() == []
+        write()
     with store.connect() as connection:
         assert connection.execute("SELECT value FROM ledger_meta WHERE key='synthetic-marker'").fetchone()[0] == "committed"
