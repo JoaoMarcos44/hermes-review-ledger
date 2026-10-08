@@ -16,7 +16,7 @@ own runtime if it is a different environment. The installer copies plugin code,
 not Python dependencies. It never upgrades Hermes or installs anything at import.
 
 Nothing is published to PyPI or npm. Use an owner-supplied, verified wheel or
-an exact reviewed commit from the private repository. Do not install an unrelated
+an exact reviewed commit from the repository. Do not install an unrelated
 registry package with the same name. There is no npm wrapper, automatic update
 service, registry release, or activation during pip installation.
 
@@ -112,7 +112,7 @@ python -m review_ledger upgrade --profile-dir "/absolute/path/to/profile"
 python -m review_ledger status --profile-dir "/absolute/path/to/profile"
 ```
 
-For an updated private Git commit, use the pinned Git URL above with
+For an updated reviewed Git commit, use the pinned Git URL above with
 `pip install --upgrade` instead. If replacing a private build that also reports
 1.0.1, pip may consider it already installed. Prefer a new clean virtual
 environment containing the reviewed wheel; otherwise explicitly use pip's

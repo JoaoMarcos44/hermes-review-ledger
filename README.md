@@ -58,7 +58,7 @@ configuration, upgrades Hermes, reads credentials, or enables the plugin.
 
 ### One command from a source checkout
 
-With this private repository already checked out, run in its root directory:
+With this repository already checked out, run in its root directory:
 
 ```sh
 python -m review_ledger install --profile-dir "/absolute/path/to/your/hermes-profile"
@@ -78,7 +78,7 @@ this project's integration tests itself requires Python 3.14.
 
 ### Install the Python command with pip
 
-In a virtual environment, pip can obtain the package directly from the private
+In a virtual environment, pip can obtain the package directly from the
 Git repository. Replace `COMMIT_SHA` with the exact reviewed 40-character commit:
 
 ```sh
@@ -86,7 +86,7 @@ python -m pip install "git+ssh://git@github.com/JoaoMarcos44/hermes-review-ledge
 hermes-review-ledger install --profile-dir "/absolute/path/to/your/hermes-profile"
 ```
 
-Git and access to the private repository must already work through your own SSH
+Git and access to the repository must already work through your own SSH
 configuration. An existing authenticated HTTPS Git setup can instead use the
 same repository's HTTPS URL. Never put a token/password in the URL, command,
 conversation, or source. Nothing has been released on npm or PyPI. Do not use an
@@ -143,8 +143,27 @@ profile run `hermes plugins enable review-ledger` if activation is intended;
 this also removes an explicit disabled entry, which otherwise wins over enabled.
 Then run `hermes plugins doctor /absolute/profile/plugins/review-ledger --ci`,
 `hermes plugins validate /absolute/profile/plugins/review-ledger`, and
-`hermes plugins list`. Start a fresh session and load the qualified skill
-`review-ledger:review-ledger` through `skill_view`.
+`hermes plugins list`.
+
+For a named profile, `hermes profile list` and `hermes profile show PROFILE`
+identify its directory; prefix each Hermes command with `hermes -p PROFILE`.
+The installer takes that absolute directory, not the profile name. For example,
+`hermes -p reviews plugins list` inspects the named `reviews` profile without
+changing the sticky default.
+
+Plugin activation and platform tool selection are separate. Inspect
+`hermes -p reviews tools list --platform cli`; if the intended workflow needs
+them enabled, run `hermes -p reviews tools enable review_ledger skills --platform cli`
+and inspect the list again. Use the actual session platform instead of `cli`
+when appropriate. `review_ledger` is the toolset name; `review-ledger` is the
+plugin and operator-command name.
+
+Start a fresh session, call the model tool `skills_list`, and load
+`skill_view(name="review-ledger:review-ledger")`. The pinned Hermes
+`skills list --enabled-only` CLI only lists filesystem skills and does not prove
+whether a plugin-registered skill loaded. It has no `skills enable NAME`
+subcommand. Ledger's separate `skill-add`/`skill-enable` operator commands manage
+optional imported instruction snapshots, not this bundled workflow skill.
 
 ### Reinstall, upgrade, status and removal
 
