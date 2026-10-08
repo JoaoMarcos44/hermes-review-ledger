@@ -1,12 +1,16 @@
 # Ledger V1: configurable lesson automation
 
-Ledger remains package 1.0.1 with SQLite schema 5 in this integrated V1 build.
-The bundled procedure revision is 2 to record this deliberate contract change;
-this is not a Ledger V2 product. The default is `manual`, including profiles upgrading without a setting. Nothing
-retroactively approves existing candidates. No background worker or model call is
-started. Automatic mode acts only during an explicit, owner-fenced `propose` or
-`improve` operation. Recording a result can still generate a review diagnostic;
-it never invents new conditions, edits, outcomes, or a successful experiment.
+Ledger remains package 1.0.2 with SQLite schema 5 in this integrated V1 build.
+The bundled procedure revision is 3 to record the proactive lesson-creation
+contract; this is not a Ledger V2 product. The default activation mode is
+`manual`, including profiles upgrading without a setting. No lesson is created
+retroactively. No background worker or extra model call is started: the bundled
+agent procedure instructs the current agent to evaluate the owned run and use the
+existing `propose` action before completion, without waiting for the user to ask.
+The agent proposes only when scoped evidence, behavioral-report requirements, and
+a reusable conditional lesson all exist. Recording a result can still generate
+a review diagnostic; it never invents new conditions, edits, outcomes, or a
+successful experiment.
 
 ## Enable, inspect, disable
 

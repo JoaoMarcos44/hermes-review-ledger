@@ -1,6 +1,6 @@
 # Opt-in deterministic context representation
 
-V1 (package 1.0.1) extends the existing optional `Context` and `Usage` implementation.
+V1 (package 1.0.2) extends the existing optional `Context` and `Usage` implementation.
 Compression itself adds no migration and does not rewrite original records, skills or logs. The integrated V1 build uses schema 5 for external review references; migrations 001–004 remain unchanged.
 The optional critic remains disabled by default and no inference is introduced.
 

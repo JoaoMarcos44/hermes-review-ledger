@@ -344,7 +344,7 @@ def test_v1_identity_and_distribution_metadata(installed_package):
         [package.python, "-I", "-m", "review_ledger", "--version"],
         [package.console, "--version"],
     ):
-        assert _run(command, cwd=package.outside, env=package.environment).strip() == "1.0.1"
+        assert _run(command, cwd=package.outside, env=package.environment).strip() == "1.0.2"
     script = """
 from importlib.metadata import version
 import json
@@ -354,8 +354,8 @@ from review_ledger.protocol import VERSION
 print(json.dumps([version('hermes-review-ledger'), __version__, SCHEMA_VERSION, VERSION]))
 """
     assert json.loads(_run([package.python, "-I", "-c", script],
-                          cwd=package.outside, env=package.environment)) == ["1.0.1", "1.0.1", 5, "2"]
-    assert "version: 1.0.1\n" in (package.source / "plugin.yaml").read_text()
+                          cwd=package.outside, env=package.environment)) == ["1.0.2", "1.0.2", 5, "3"]
+    assert "version: 1.0.2\n" in (package.source / "plugin.yaml").read_text()
     assert (package.source / "docs" / "installation.md").is_file()
     assert (package.source / "scripts" / "benchmark_compression.py").is_file()
 
@@ -397,10 +397,10 @@ def test_installed_cli_upgrades_owned_prior_versions_and_preserves_data(installe
     assert '"state": "upgraded"' in output
     for name, digest in package.expected_hashes.items():
         assert _digest((target / name).read_bytes()) == digest
-    assert json.loads(marker.read_text())["version"] == "1.0.1"
+    assert json.loads(marker.read_text())["version"] == "1.0.2"
     status = _run([package.console, "status", "--profile-dir", profile],
                   cwd=package.outside, env=package.environment)
-    assert json.loads(status)["version"] == "1.0.1"
+    assert json.loads(status)["version"] == "1.0.2"
     _run([package.console, "uninstall", "--profile-dir", profile],
          cwd=package.outside, env=package.environment)
     assert not target.exists()
