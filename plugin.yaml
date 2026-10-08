@@ -1,6 +1,6 @@
 name: review-ledger
-version: 0.4.0
-description: Profile-local review investigations and explicitly approved lessons
+version: 1.0.0
+description: Profile-local review investigations and configurable audited lessons
 provides_tools:
   - ledger_open
   - ledger_status
@@ -32,6 +32,10 @@ config_schema:
     type: bool
     default: false
     description: Allow context to load operator-approved local instruction snapshots
+  lesson_automation_mode:
+    type: str
+    default: manual
+    description: Explicit automatic or manual lesson activation; local operator override takes precedence
   improvements_enabled:
     type: bool
     default: false
@@ -45,6 +49,18 @@ config_schema:
     default: 12000
     description: Full serialized context response character cap from 2000 to 64000
 
+  compression_enabled:
+    type: bool
+    default: false
+    description: Allow explicit compact/reference context views; legacy full remains default
+  bundle_byte_budget:
+    type: int
+    default: 256000
+    description: Full UTF-8 response cap for opt-in projections, from 2000 to 256000
+  bundle_token_budget:
+    type: int
+    default: 64000
+    description: Optional projection token ceiling from 1 to 256000; unverified without a prepared local counter
   critic_enabled:
     type: bool
     default: false

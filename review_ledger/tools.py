@@ -10,7 +10,7 @@ from pathlib import Path
 from . import __version__
 from .github import GitHubClient, GitHubError
 from .learning import Learning
-from .models import Actor, LedgerError, fields, integer, strings, text
+from .models import Actor, LedgerError, canonical, choice, fields, integer, strings, text
 from .reports import export
 from .service import Ledger
 from .storage import Store
@@ -38,12 +38,15 @@ def ledger_for_context(ctx) -> Ledger:
     )
     # Pilot controls do not alter snapshot identity or grant repository access.
     ledger.pilot = {}
-    for name in ("context_enabled", "optional_skills_enabled", "improvements_enabled", "usage_enabled"):
+    for name in ("context_enabled", "optional_skills_enabled", "improvements_enabled", "usage_enabled", "compression_enabled"):
         value = ctx.get_config(name, default=False)
         if type(value) is not bool:
             raise LedgerError("invalid_input", f"Configured {name} must be boolean")
         ledger.pilot[name] = value
+    ledger.automation_mode = choice(ctx.get_config("lesson_automation_mode", default="manual"), "configured lesson_automation_mode", {"automatic", "manual"})
     ledger.bundle_budget = integer(ctx.get_config("bundle_budget", default=12000), "configured bundle_budget", 2000, 64000)
+    ledger.bundle_byte_budget = integer(ctx.get_config("bundle_byte_budget", default=256000), "configured bundle_byte_budget", 2000, 256000)
+    ledger.bundle_token_budget = integer(ctx.get_config("bundle_token_budget", default=64000), "configured bundle_token_budget", 1, 256000)
     return ledger
 
 
@@ -123,22 +126,29 @@ def handle(ctx, name: str, arguments: dict, **kwargs) -> str:
             if not getattr(ledger, "pilot", {}).get("context_enabled", False):
                 raise LedgerError("feature_disabled", "Operator must enable context_enabled for the pilot")
             from .context import Context
-            context = Context(ledger, ledger.bundle_budget, skills_enabled=getattr(ledger, "pilot", {}).get("optional_skills_enabled", False))
+            context = Context(ledger, ledger.bundle_budget,
+                skills_enabled=getattr(ledger, "pilot", {}).get("optional_skills_enabled", False),
+                compression_enabled=getattr(ledger, "pilot", {}).get("compression_enabled", False),
+                byte_budget=getattr(ledger, "bundle_byte_budget", 256000),
+                token_budget=getattr(ledger, "bundle_token_budget", None),
+                counter=getattr(ledger, "local_counter", None))
+            limits = {key: args[key] for key in ("mode", "max_bytes", "max_tokens", "strict_tokens") if key in args}
             action = args["action"]
             common = (repository, args["run_id"], actor)
             if action == "prepare":
                 if any(k in args for k in ("manifest_id", "kind", "record_id", "section")):
                     raise LedgerError("invalid_input", "Prepare does not accept resume or detail selectors")
                 result = context.prepare(*common, query=args["query"], phase=args.get("phase", "investigate"),
-                                         max_chars=args.get("max_chars"), tags=args.get("tags"), symbols=args.get("symbols"))
+                                         max_chars=args.get("max_chars"), tags=args.get("tags"), symbols=args.get("symbols"),
+                                         reference_as_of=args.get("reference_as_of"), reference_offset=args.get("reference_offset", 0), **limits)
             elif action == "resume":
-                if any(k in args for k in ("phase", "tags", "symbols", "kind", "record_id", "section")):
+                if any(k in args for k in ("phase", "tags", "symbols", "kind", "record_id", "section", "reference_as_of", "reference_offset")):
                     raise LedgerError("invalid_input", "Resume accepts query, manifest_id and max_chars only")
-                result = context.resume(*common, query=args.get("query"), manifest_id=args.get("manifest_id"), max_chars=args.get("max_chars"))
+                result = context.resume(*common, query=args.get("query"), manifest_id=args.get("manifest_id"), max_chars=args.get("max_chars"), **limits)
             elif action == "detail":
-                if any(k in args for k in ("query", "phase", "tags", "symbols", "manifest_id")):
+                if any(k in args for k in ("query", "phase", "tags", "symbols", "manifest_id", "reference_offset")):
                     raise LedgerError("invalid_input", "Detail accepts kind, record_id, section and max_chars only")
-                result = context.detail(*common, kind=args["kind"], record_id=args.get("record_id"), section=args.get("section"), max_chars=args.get("max_chars"))
+                result = context.detail(*common, kind=args["kind"], record_id=args.get("record_id"), section=args.get("section"), max_chars=args.get("max_chars"), reference_as_of=args.get("reference_as_of"), **limits)
             else:
                 raise LedgerError("invalid_input", "Context action must be prepare, resume or detail")
         elif name == "ledger_lesson":
@@ -149,7 +159,8 @@ def handle(ctx, name: str, arguments: dict, **kwargs) -> str:
                 limit=args.get("limit", 25), offset=args.get("offset", 0),
                 max_chars=args.get("max_chars", 100000),
             )
-        rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        rendered = (canonical(result) if name == "ledger_context" and "representation" in result
+                    else json.dumps(result, ensure_ascii=False, separators=(",", ":"), allow_nan=False))
         if getattr(ledger, "pilot", {}).get("usage_enabled", False):
             # A telemetry failure must never make a committed write appear failed.
             try:
@@ -250,7 +261,7 @@ def _critic_action(ctx, ledger: Ledger, repository: str, actor: Actor, args: dic
 
 
 def _record_lesson(ledger: Ledger, repository: str, actor: Actor, args: dict) -> dict:
-    learning = Learning(ledger.store, improvements_enabled=getattr(ledger, "pilot", {}).get("improvements_enabled", False))
+    learning = Learning(ledger.store, improvements_enabled=getattr(ledger, "pilot", {}).get("improvements_enabled", False), automation_mode=getattr(ledger, "automation_mode", "manual"))
     scope = ledger.scope(repository)
     data, action = args["data"], args["action"]
     common = (scope, args["run_id"], actor, args["generation"])
@@ -274,8 +285,8 @@ def _record_lesson(ledger: Ledger, repository: str, actor: Actor, args: dict) ->
         if not getattr(ledger, "pilot", {}).get("improvements_enabled", False):
             raise LedgerError("feature_disabled", "Operator must enable improvements_enabled")
         from .improvements import Improvements
-        return Improvements(ledger.store).propose(*common, data, request_key)
-    raise LedgerError("invalid_input", "Lesson tools may propose, revise, use or record results; approval is operator-only")
+        return Improvements(ledger.store, automation_mode=getattr(ledger, "automation_mode", "manual")).propose(*common, data, request_key)
+    raise LedgerError("invalid_input", "Lesson tools may propose, revise, use or record results; manual approval and policy changes are operator-only")
 
 
 S = {"type": "string"}
@@ -299,12 +310,12 @@ SCHEMAS = {
                              "detail_id": {"type": "string", "description": "Required for observation, assessment or finding detail; omit for run detail"}}, ["repository"]),
     "ledger_run": schema("ledger_run", "Acquire an unowned run or release, pause, complete the current owned generation. Never transfer another session's ownership.",
                          {**WRITE, "action": {"type": "string", "enum": ["acquire", "release", "pause", "complete"]}, "note": S}, [*WRITE, "action"]),
-    "ledger_record": schema("ledger_record", "Record agent-reported evidence, propose a finding, assess it for this snapshot, or invalidate an owned-run observation. Read the skill for action-specific data fields.",
-                            {**WRITE, "action": {"type": "string", "enum": ["observation", "finding", "assessment", "invalidate_observation"]}, "data": {"type": "object"}}, [*WRITE, "action", "data"]),
+    "ledger_record": schema("ledger_record", "Record agent-reported evidence, propose a finding, assess it for this snapshot, or record/invalidate frozen external references as untrusted context. Read the skill for action-specific data fields.",
+                            {**WRITE, "action": {"type": "string", "enum": ["observation", "finding", "assessment", "invalidate_observation", "external_reference", "invalidate_external_reference"]}, "data": {"type": "object"}}, [*WRITE, "action", "data"]),
     "ledger_recall": schema("ledger_recall", "Read eligible same-repository lessons or budgeted references. With version_id, retrieve complete lesson JSON in bounded pages; reassemble before use. Search uses result_offset within its candidate window; detail uses offset as a character position. Similarity is not proof.",
                             {**BASE, "terms": {"type": "array", "items": S}, "tags": {"type": "array", "items": S}, "symbols": {"type": "array", "items": S}, "version_id": S,
                              "limit": I, "context_budget": I, "offset": I, "result_offset": I}, ["repository", "run_id"]),
-    "ledger_lesson": schema("ledger_lesson", "Propose or revise candidate lessons; record exact-version use and separate applicability, usefulness, behavior, and blocking. Cannot approve lessons.",
+    "ledger_lesson": schema("ledger_lesson", "Propose or revise candidate lessons; record exact-version use and separate applicability, usefulness, behavior, and blocking. No model approval switch; a trusted automatic policy may activate eligible proposals.",
                             {**WRITE, "action": {"type": "string", "enum": ["propose", "revise", "use", "result", "improve"]}, "data": {"type": "object"}}, [*WRITE, "action", "data"]),
     "ledger_export": schema("ledger_export", "Generate a bounded Markdown/JSON snapshot; checks lesson revocations and missing artifacts. Does not publish or import.",
                             {**BASE, "format": {"type": "string", "enum": ["markdown", "json"]}, "limit": I, "offset": I, "max_chars": I}, ["repository", "run_id", "format"]),
@@ -345,7 +356,13 @@ SCHEMAS["ledger_context"] = schema("ledger_context", "Prepare bounded complete g
     {**BASE, "action": {"type": "string", "enum": ["prepare", "resume", "detail"]},
      "query": S, "phase": S, "tags": {"type": "array", "items": S}, "symbols": {"type": "array", "items": S},
      "max_chars": {"type": "integer", "minimum": 2000, "maximum": 64000},
-     "manifest_id": S, "kind": S, "record_id": S, "section": S}, ["repository", "run_id", "action"])
+     "mode": {"type": "string", "enum": ["full", "compact", "reference"]},
+     "max_bytes": {"type": "integer", "minimum": 2000, "maximum": 256000},
+     "max_tokens": {"type": "integer", "minimum": 1, "maximum": 256000},
+     "strict_tokens": {"type": "boolean"},
+     "manifest_id": S, "kind": S, "record_id": S, "section": S,
+     "reference_as_of": {"type": "string", "description": "UTC/local-offset timestamp cutoff for locally captured external references only; not an as-of filter for other context"},
+     "reference_offset": {"type": "integer", "minimum": 0, "maximum": 1000000}}, ["repository", "run_id", "action"])
 
 
 TOOL_NAMES = tuple(SCHEMAS)

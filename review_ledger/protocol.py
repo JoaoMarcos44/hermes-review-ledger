@@ -2,7 +2,7 @@
 from importlib.resources import files
 import hashlib
 
-VERSION = "1"
+VERSION = "2"
 
 def protocol():
     content = files("review_ledger").joinpath("resources/protocol.md").read_text(encoding="utf-8")

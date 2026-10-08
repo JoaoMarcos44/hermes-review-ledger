@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-review-ledger"
-version = "0.4.0"
-description = "Persistent review bookkeeping and operator-approved conditional lessons for Hermes"
+version = "1.0.0"
+description = "Persistent review bookkeeping and audited conditional lessons for Hermes"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 dependencies = ["PyYAML>=6.0.2,<7"]

@@ -23,6 +23,8 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[2]
 HERMES_REVISION = "0dbaf33f67acf1f6d8e8e6c6efe8042ef8db98c4"
 REQUIRED_INTEGRATION_TESTS = {
+    "test_native_external_reference_is_context_not_evidence",
+    "test_native_external_reference_revoke_and_cutoff",
     "test_actual_plugin_doctor",
     "test_real_discovery_and_skill_serving",
     "test_real_registry_rejects_absent_trusted_session",
@@ -38,6 +40,11 @@ REQUIRED_INTEGRATION_TESTS = {
     "test_real_v15_context_registry_usage_and_resume",
     "test_real_critic_disabled_preserves_v15_runtime",
     "test_real_critic_unverifiable_preserves_v15_runtime",
+    "test_native_compression_is_disabled_by_default_and_legacy_unchanged",
+    "test_native_final_string_enforces_operator_and_model_limits",
+    "test_native_model_cannot_change_operator_controls",
+    "test_native_resume_and_independent_detail_preserve_context",
+    "test_native_invalidated_observation_never_returns_as_projected_detail",
 }
 
 
@@ -76,7 +83,7 @@ def summarize_junit(path: Path) -> tuple[dict, list[str]]:
               "skipped": 0, "core": 0, "hermes_integration": 0}
     actual_integration = set()
     for case in cases:
-        integration = case.get("classname", "").split(".")[-1] == "test_hermes_integration"
+        integration = case.get("classname", "").split(".")[-1] in {"test_hermes_integration", "test_compression_native", "test_reference_native"}
         counts["hermes_integration" if integration else "core"] += 1
         if integration:
             actual_integration.add(case.get("name"))

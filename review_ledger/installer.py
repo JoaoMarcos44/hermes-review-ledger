@@ -147,7 +147,8 @@ def _payload() -> dict[str, bytes]:
     required = {"review_ledger/tools.py", "review_ledger/migrations/001_initial.sql",
                 "skills/review-ledger/SKILL.md", "review_ledger/resources/protocol.md", "review_ledger/critic.py",
                 "review_ledger/critic_hermes.py", "review_ledger/critic_contract.py",
-                "review_ledger/prompts/critic_v1.md", "review_ledger/migrations/004_critic.sql"}
+                "review_ledger/prompts/critic_v1.md", "review_ledger/migrations/004_critic.sql", "review_ledger/migrations/005_review_references.sql",
+                "review_ledger/references.py"}
     if not required.issubset(names):
         raise InstallError("Incomplete plugin payload; reinstall the package or use the complete source checkout")
     payload = {}
@@ -367,6 +368,14 @@ def install(profile_dir: Path | str) -> dict:
     return _change(profile_dir, False)
 
 
+def upgrade(profile_dir: Path | str) -> dict:
+    """Apply the selected package payload; identical content is a no-op.
+
+    Like pip upgrade, this also installs when absent. It never fetches packages.
+    """
+    return install(profile_dir)
+
+
 def uninstall(profile_dir: Path | str) -> dict:
     return _change(profile_dir, True)
 
@@ -386,18 +395,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Install Review Ledger code into one existing Hermes profile; no config changes.")
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("install", "status", "uninstall"):
+    for name in ("install", "upgrade", "status", "uninstall"):
         command = commands.add_parser(name)
         command.add_argument("--profile-dir", required=True, type=Path,
                              help="absolute directory of an existing profile containing config.yaml")
     args = parser.parse_args(argv)
     try:
-        result = {"install": install, "status": status, "uninstall": uninstall}[args.command](args.profile_dir)
+        result = {"install": install, "upgrade": upgrade, "status": status, "uninstall": uninstall}[args.command](args.profile_dir)
     except (InstallError, OSError) as exc:
         print(f"Review Ledger: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    if args.command == "install":
+    if args.command in {"install", "upgrade"}:
         print("Code is installed. Enable/configure review-ledger explicitly in this same profile, then restart Hermes.")
         print("The full operator CLI requires the profile's existing plugins.isolation to be in_process; this installer never changes it.")
     return 0

@@ -15,9 +15,9 @@ CHANGE_FIELDS = frozenset({"conditions", "exclusions", "tags", "symbols", "verif
 
 
 class Improvements:
-    def __init__(self, store: Store):
+    def __init__(self, store: Store, *, automation_mode: str = "manual"):
         self.store = store
-        self.learning = Learning(store)
+        self.learning = Learning(store, automation_mode=automation_mode)
 
     @staticmethod
     def _outcome(conn, scope, outcome_id, target_version_id):
@@ -185,6 +185,7 @@ class Improvements:
             for outcome_id in outcomes:
                 conn.execute("INSERT INTO improvement_outcomes VALUES (?,?,?)", (scope.repository_id, ident, outcome_id))
             self.store.audit(conn, scope, ident, "improvement_proposed", actor.session_id, {"candidate_version_id": candidate["version_id"]})
+            candidate.update(self.learning._automate(conn, scope, run_id, candidate["version_id"]))
             return {**candidate, "improvement_id": ident, "changes": diff, "expected_benefit_is_hypothesis": True}
         return self.store.write(scope, "improvement_propose", run_id, request_key,
                                 {"actor": actor.session_id, "generation": generation, "data": data}, write)

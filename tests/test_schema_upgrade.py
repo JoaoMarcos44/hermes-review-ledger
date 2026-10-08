@@ -155,7 +155,7 @@ def all_records(path, tables):
                 for table in sorted(tables)}
 
 def assert_current(conn):
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION == 4
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION == 5
     assert conn.execute("SELECT value FROM ledger_meta WHERE key='schema_lineage'").fetchone()[0] == "adaptive-v15"
     assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -224,7 +224,7 @@ def test_refused_v1_upgrade_preserves_database_bytes_before_migration(tmp_path, 
         assert not INDEXES.keys() & {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
 
 
-@pytest.mark.parametrize("interrupted_version", [2, 3, 4])
+@pytest.mark.parametrize("interrupted_version", [2, 3, 4, 5])
 def test_interrupted_migration_rolls_back_indexes_and_schema_version(tmp_path, monkeypatch, interrupted_version):
     store = v1_store(tmp_path / "interrupted")
     before = records(store.path)

@@ -9,7 +9,14 @@ from .models import Actor, LedgerError
 
 def configure_parser(parser):
     sub = parser.add_subparsers(dest="ledger_operator_action", required=True)
-    for action in ("approve", "suspend", "restrict", "inspect"):
+    command = sub.add_parser("automation-status", help="Inspect effective repository-local lesson policy")
+    command.add_argument("repository")
+    command = sub.add_parser("automation", help="Set audited automatic/manual mode; no retroactive activation")
+    command.add_argument("repository")
+    command.add_argument("mode", choices=["automatic", "manual"])
+    command.add_argument("--reason", required=True)
+    command.add_argument("--request-key", required=True)
+    for action in ("approve", "suspend", "restrict", "inspect", "rollback"):
         command = sub.add_parser(action, help=f"{action.capitalize()} an exact lesson version")
         command.add_argument("repository")
         command.add_argument("version_id")
@@ -103,12 +110,19 @@ def dispatch(ctx, args):
         elif action == "usage":
             from .usage import Usage
             result = Usage(ledger.store).report(ledger.scope(args.repository), args.run_id)
-        elif action in ("approve", "suspend", "restrict", "inspect"):
+        elif action in ("automation", "automation-status"):
+            learning = Learning(ledger.store, automation_mode=getattr(ledger, "automation_mode", "manual"))
+            scope = ledger.scope(args.repository)
+            result = (learning.automation_status(scope) if action == "automation-status" else
+                      learning.automation_policy(scope, args.mode, args.reason, args.request_key))
+        elif action in ("approve", "suspend", "restrict", "inspect", "rollback"):
             scope = ledger.scope(args.repository)
             learning = Learning(ledger.store)
             if action == "inspect":
                 with ledger.store.connect() as conn:
                     result = {"state": "ok", "lesson": learning.version(conn, scope, args.version_id)}
+            elif action == "rollback":
+                result = learning.rollback(scope, args.version_id, args.reason, args.request_key)
             else:
                 result = learning.operator(scope, args.version_id, action, args.reason, args.request_key)
         elif action in ("transfer", "release"):

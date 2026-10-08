@@ -7,6 +7,7 @@ import re
 
 from .learning import Learning
 from .critic import Critic
+from .references import References
 from .models import Actor, LedgerError, choice, integer
 from .service import Ledger
 from .storage import now
@@ -38,6 +39,12 @@ def export(ledger: Ledger, repository: str, run_id: str, actor: Actor, *, format
                 rows = [dict(r) for r in conn.execute(query, params)]
                 omitted[name] = len(rows) > limit
                 collections[name] = rows[:limit]
+            reference_rows = conn.execute("SELECT id FROM external_review_references WHERE repository_id=? AND review_id=? ORDER BY rowid LIMIT ? OFFSET ?",
+                                          (scope.repository_id, run["review_id"], limit + 1, offset)).fetchall()
+            if reference_rows:
+                omitted["external_references"] = len(reference_rows) > limit
+                collections["external_references"] = [References.get(conn, scope, run_id, row["id"], require_valid=False)
+                                                       for row in reference_rows[:limit]]
             findings = ledger._findings(conn, scope, run_id, limit + 1, offset)
             omitted["findings"] = len(findings) > limit
             collections["findings"] = findings[:limit]
@@ -70,6 +77,12 @@ def export(ledger: Ledger, repository: str, run_id: str, actor: Actor, *, format
                         try:
                             skill = Skills.version(conn, scope, ident, require_enabled=True)
                             selected["eligible_now"] = skill["eligible_now"]
+                        except LedgerError:
+                            selected["eligible_now"] = False
+                    elif kind == "external_reference":
+                        try:
+                            References.get(conn, scope, run_id, ident)
+                            selected["eligible_now"] = True
                         except LedgerError:
                             selected["eligible_now"] = False
                     elif kind == "observation":
@@ -155,6 +168,10 @@ def markdown(data: dict) -> str:
                       f"  Limitations: {_literal(obs['limitations'])}"])
         if obs.get("artifact"):
             lines.append(f"  Artifact: {obs['artifact']['id']} ({obs['artifact']['state']})")
+    if data.get("external_references"):
+        lines.extend(["", "## Frozen external references (agent-reported context, not evidence)"])
+        for reference in data["external_references"]:
+            lines.append("- " + _literal(json.dumps(reference, ensure_ascii=False, sort_keys=True)))
     lines.extend(["", "## Lessons used"])
     for use in data["lesson_uses"]:
         lines.append(f"- {use['version_id']}: applicability={use['applicability']}; usefulness={use['usefulness']}; behavioral result={use['behavioral_result']}; execution block={use['execution_block']}; eligible now={use['eligible_now']}")

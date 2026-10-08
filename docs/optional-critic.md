@@ -1,4 +1,4 @@
-# Optional claim critic (integrated 0.4.0)
+# Optional claim critic (V1 / 1.0.0)
 
 The critic examines up to three selected, recorded review claims. It does not
 independently redo the PR review or promise to detect omitted defects. An opinion
@@ -169,12 +169,13 @@ cases. This release implements traceable bookkeeping, not measured improvement.
 
 ## Integrated schema compatibility
 
-The integrated release uses schema 4, preserving V1.5 adaptive-context schema 3
-and adding critic records in migration 004. Genuine V1/V2 and V1.5 databases
+The integrated release uses schema 5, preserving V1.5 adaptive-context schema 3,
+adding critic records in migration 004 and frozen external references in migration
+005. External metadata never becomes critic verification or lesson evidence. Genuine V1/V2 and V1.5 databases
 upgrade transactionally; the historical experimental critic schema 3 is refused
 without mutation. See [migration and backup guidance](v15-pilot.md#release-identities-and-compatibility).
 
 Critic-linked lessons retain their exact assessment and verification provenance
 when V1.5 proposes an improved version. Reassessment or invalidated evidence
-makes the derived version ineligible; a new operator approval never substitutes
+makes the derived version ineligible; neither operator nor automatic policy approval substitutes
 for current, valid provenance.

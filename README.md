@@ -1,4 +1,4 @@
-# Hermes Review Ledger 0.4.0
+# Hermes Review Ledger V1 (1.0.0)
 
 <p align="center">
   <img src="docs/assets/ledger-pixel.gif" width="640" height="360" alt="Ledger, a green-haired, purple-suited pixel character, laughing and holding a playing card. Silent animation." />
@@ -8,7 +8,7 @@
 The animation is silent. [View the still image](docs/assets/ledger-pixel.png).
 
 
-**V1.5 pilot:** [installation, exact defaults, operator/agent workflow, version mapping, limitations and evaluation](docs/v15-pilot.md). The original workflow remains available with pilot features disabled.
+**V1 optional context pilot:** [installation, exact defaults, operator/agent workflow, version mapping, limitations and evaluation](docs/v15-pilot.md). The original workflow remains available with pilot features disabled.
 
 A small native Hermes plugin for persistent, profile-local GitHub PR investigations and operator-approved conditional investigation lessons.
 
@@ -38,6 +38,16 @@ Relevant public sources:
 - [pytest temporary fixtures](https://docs.pytest.org/en/stable/how-to/tmp_path.html)
 
 ## Command-line installation
+
+Follow the [complete install and update guide](docs/installation.md), including
+clean virtual environments, offline dependencies, backups and rollback limits.
+V1 is package/plugin **1.0.0**. Earlier 0.x builds were private development
+iterations, not public releases; historical records retain their original labels.
+SQLite schema is **5** after the additive frozen-reference increment; protocol is **2** after the deliberate lesson-policy update. Product identity does not reset either counter.
+
+Frozen review/comment references reuse existing findings and the Context Engine;
+see [review references](docs/review-references.md). Configurable automatic lesson
+activation follows the separate [audited policy](docs/lesson-automation.md).
 
 Choose an existing Hermes profile and stop its Hermes sessions before changing
 plugin code. The installer requires an absolute directory containing an existing
@@ -86,9 +96,11 @@ copies `plugin.yaml`, the root `__init__.py`, runtime modules, SQL migrations, v
 bundled skill together. If the console command is not on PATH, use
 `python -m review_ledger` with that virtual environment's interpreter.
 
-A locally built wheel can be installed offline with
-`python -m pip install --no-index --no-deps /path/to/the-built-wheel.whl`, followed
-by the same profile installation command. Wheels and source distributions are
+A locally built wheel can be installed with
+`python -m pip install /path/to/hermes_review_ledger-1.0.0-py3-none-any.whl`.
+For fully offline installation, prepare the runtime dependency wheels first and
+use `--no-index --find-links /path/to/wheelhouse` (see the guide).
+`--no-deps` is only appropriate when the required PyYAML is already installed. Wheels and source distributions are
 built and checked in tests; they are not automatically published anywhere.
 
 ### Enable and configure the selected profile
@@ -134,7 +146,9 @@ Then run `hermes plugins doctor /absolute/profile/plugins/review-ledger --ci`,
 
 ### Reinstall, upgrade, status and removal
 
-Run `install` again after selecting the desired package/source revision. Identical
+Update the package in its virtual environment first, then run `upgrade` (or
+`install`) for each intended profile. Neither command downloads packages.
+The `upgrade` command also installs when the target is absent. Identical
 content is a no-op. An upgrade replaces only an intact installer-owned code tree;
 its manifest records every shipped file's SHA-256. Modified files, unrecognized
 contents, manual installations, links/junctions, or malformed ownership metadata
@@ -142,6 +156,7 @@ are refused. There is no force-overwrite flag. Keep a manual installation aside
 yourself after inspecting it; the installer does not adopt it automatically.
 
 ```sh
+python -m review_ledger upgrade --profile-dir "/absolute/path/to/your/hermes-profile"
 python -m review_ledger status --profile-dir "/absolute/path/to/your/hermes-profile"
 python -m review_ledger uninstall --profile-dir "/absolute/path/to/your/hermes-profile"
 ```
@@ -211,7 +226,7 @@ a self-improvement loop. The separate optional critic is described below.
 
 ### Optional claim critic
 
-Integrated version 0.4.0 includes one optional critic tool, `ledger_critic`, with `prepare`, `run`, `status` and
+Integrated version 1.0.0 includes one optional critic tool, `ledger_critic`, with `prepare`, `run`, `status` and
 `assess` actions. The critic is disabled by default. Preparation and reading are
 local; only explicit execution reaches the optional provider boundary. The
 pinned Hermes host cannot publicly prove its complete effective egress/fallback
@@ -241,7 +256,8 @@ runtime entities, background execution or schema migration.
 
 These guides do not claim measured reviewer improvement, token savings, or a
 completed comparison between models. The plugin still assigns `agent_reported`
-provenance, keeps one writer, and requires separate operator approval of lessons.
+provenance and keeps one writer. Default manual mode requires separate operator
+approval; explicit automatic mode follows the bounded audited policy.
 Neither a critique nor lack of reproduction automatically invalidates evidence.
 A changed skill hash creates a new comparison identity on the next open; this
 documentation/skill update does not retroactively revalidate historical results.
@@ -318,7 +334,7 @@ The [original bundled skill](skills/review-ledger/SKILL.md) documents all operat
 Learning remains within one repository and one resolved profile.
 
 1. The agent proposes a conditional question with application conditions, exclusions, suggested investigation, tags/symbols and eligible observation sources. This is a `candidate`.
-2. A local operator inspects and explicitly approves that exact version.
+2. In default manual mode, a local operator inspects and explicitly approves that exact version. Explicit automatic mode can activate eligible proposals under the [bounded policy](docs/lesson-automation.md).
 3. `ledger_recall` returns up to five eligible active versions or compact `lesson_references` with `version_id` and `required_context_chars`. Selection is deterministic, bounded, and based on terms, tags and symbols. SQL filtering and ranking both use Unicode NFC/casefold without changing stored text. No embeddings, probabilities or model calls are used.
 4. Before applying one, `ledger_lesson(action="use")` records its exact version, applicability and explanation and rechecks eligibility.
 5. `ledger_lesson(action="result")` records usefulness, behavioral result, execution blocking and a separate explanation. Refutation can be useful. Blocked execution is inconclusive. Unused lessons receive no invented outcome.
@@ -386,7 +402,7 @@ bounded lock waits are used. Database contention produces an explicit error;
 retry with the same request key. Network calls and optional artifact staging are
 outside database writer transactions.
 
-The current data schema is version 4, preserving the `adaptive-v15` lineage.
+The current data schema is version 5, preserving the `adaptive-v15` lineage.
 First access upgrades an authorized version-1/2 database or genuine V1.5
 schema-3 database atomically: query indexes, adaptive context and critic tables
 are applied in order. Review records, receipts, exact resources, approvals,
@@ -401,7 +417,7 @@ Use a fresh empty profile, or restore a verified pre-experimental V1/V2 backup
 at its original resolved profile data path; ownership is path-bound. Do not
 rewrite the ownership key or move a restored database to another profile. See the
 [V1.5 compatibility guide](docs/v15-pilot.md#release-identities-and-compatibility).
-Older code refuses schema 4; no automatic schema downgrade is provided.
+Older code refuses schema 5; no automatic schema downgrade is provided.
 
 ### Explicit SQLite journal policy
 
@@ -502,7 +518,7 @@ The suite covers Unicode/spaced profile paths, real filesystem cleanup, determin
 
 Actual validation results are recorded only after running the final source. Do not infer coverage for an OS without an execution report from its real native runner. Live GitHub authentication, a real user PR pilot, and a full interactive model conversation require separate validation. The plugin does not claim measured improvement in review quality.
 
-The validation totals and actual command output are recorded in the accompanying implementation report and native CI artifacts, each tied to the source revision. Missing, pending, failed, or skipped native runs are never counted as passes. Earlier 0.1.0 validation reported 7 tools and 0 hooks with no findings; that result is historical, not validation of the integrated nine-tool release. The earlier `hermes plugins validate` pass included manifest/registration agreement and its no-core-override check. New validation results must be tied to integrated 0.4.0; the old native results do not certify this extension. Package tests build and install the source distribution and complete installer wheel locally; artifacts are not published.
+The validation totals and actual command output are recorded in the accompanying implementation report and native CI artifacts, each tied to the source revision. Missing, pending, failed, or skipped native runs are never counted as passes. Earlier 0.1.0 validation reported 7 tools and 0 hooks with no findings; that result is historical, not validation of the integrated nine-tool release. The earlier `hermes plugins validate` pass included manifest/registration agreement and its no-core-override check. New validation results must be tied to integrated 1.0.0; the old native results do not certify this extension. Package tests build and install the source distribution and complete installer wheel locally; artifacts are not published.
 
 ## Source layout and licensing
 
@@ -514,4 +530,18 @@ No project license or authorship declaration is invented. Licensing remains the 
 
 ## Deliberately deferred
 
-MCP, dashboards, other hosting, external review imports, memory synchronization, embeddings/graphs/PostgreSQL, unrestricted auxiliary models, telemetry, daemons/cron/webhooks, distributed queues, parallel agents, target-repository test execution, code-fix commits, publication and merges are outside V1. The bounded optional claim critic is the only auxiliary-model extension; none of the other deferred features has a placeholder framework here.
+MCP, dashboards, other hosting, automatic/network external review imports, memory synchronization, embeddings/graphs/PostgreSQL, unrestricted auxiliary models, telemetry, daemons/cron/webhooks, distributed queues, parallel agents, target-repository test execution, code-fix commits, publication and merges are outside V1. The bounded optional claim critic is the only auxiliary-model extension; none of the other deferred features has a placeholder framework here.
+
+## Optional compact context (V1)
+
+Deterministic Python structural views are opt-in; legacy calls remain the default.
+See [context compression](docs/context-compression.md) for independent character/byte
+budgets, honest optional token accounting, full/reference detail, offline benchmarks
+and limits. Compression adds no migration; this integrated build uses schema 5; the optional critic is still disabled by default.
+
+## Configurable lesson automation (V1)
+
+Lessons remain manual by default. An explicit local operator/profile choice can
+activate bounded eligible proposals automatically, with provenance, audit, quotas
+and immutable-version rollback. See [exact gates and enable/disable commands](docs/lesson-automation.md).
+Automatic approval is a policy decision, never independent evidence or model training.
