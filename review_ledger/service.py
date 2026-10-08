@@ -512,7 +512,7 @@ class Ledger:
         if state in ("supported", "refuted"):
             if not observations or basis == "none" or any(o["outcome"] not in ELIGIBLE_OUTCOMES for o in observations):
                 raise LedgerError("ineligible_evidence", "Infrastructure, timeout, skipped, incomplete or absent reports cannot support/refute a finding")
-            if basis == "behavior" and any(o["outcome"] == "inspection" or o["kind"] != "test" or not o["environment"] or not o["details"] for o in observations):
+            if basis == "behavior" and any(o["outcome"] == "inspection" or o["kind"] != "test" or not (o["environment"] or "").strip() or not o["details"].strip() for o in observations):
                 raise LedgerError("incomplete_behavior_report", "Behavior assessment needs test details and environment; inspection remains inspection")
         resolution = data.get("resolution")
         if resolution is not None:

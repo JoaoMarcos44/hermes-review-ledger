@@ -380,12 +380,6 @@ class Store:
             # sqlite3's own context manager commits/rolls back, but never closes.
             # Close both temporary databases before native cleanup or publication.
             with self.connect() as source, closing(sqlite3.connect(temporary)) as destination:
-                # Imported instruction resources are canonical immutable SQLite
-                # rows, so the same atomic backup includes their approved bytes.
-                # Refuse to publish a backup with missing or corrupt resources.
-                from .skills import Skills
-                for row in source.execute("SELECT s.id,s.repository_id,r.name FROM optional_skill_versions s JOIN repositories r ON r.id=s.repository_id"):
-                    Skills.version(source, Scope(row["repository_id"], row["name"]), row["id"])
                 deadline = time.monotonic() + 10
                 def progress(status, remaining, total):
                     if time.monotonic() > deadline:
@@ -402,12 +396,19 @@ class Store:
                 restored = Path(restore_dir) / "restored.sqlite3"
                 shutil.copyfile(temporary, restored)
                 with closing(sqlite3.connect(restored)) as check:
+                    check.row_factory = sqlite3.Row
                     if check.execute("PRAGMA integrity_check").fetchone()[0] != "ok" or check.execute("PRAGMA foreign_key_check").fetchone():
                         raise LedgerError("backup_invalid", "Restored backup failed consistency checks")
                     if self._checked_version(check) != SCHEMA_VERSION:
                         raise LedgerError("backup_invalid", "Restored backup has the wrong schema")
                     if check.execute("PRAGMA journal_mode").fetchone()[0].lower() != DEFAULT_JOURNAL_MODE:
                         raise LedgerError("backup_invalid", "Restored backup has the wrong journal mode")
+                    # Validate the exact copied snapshot, not an earlier view of
+                    # the live source that could change before/during backup.
+                    # This also avoids holding source read locks while hashing.
+                    from .skills import Skills
+                    for row in check.execute("SELECT s.id,s.repository_id,r.name FROM optional_skill_versions s JOIN repositories r ON r.id=s.repository_id"):
+                        Skills.version(check, Scope(row["repository_id"], row["name"]), row["id"])
             final = directory / f"{ident}.sqlite3"
             os.replace(temporary, final)
             return {"state": "backed_up", "path": str(final), "restore_verified": True,

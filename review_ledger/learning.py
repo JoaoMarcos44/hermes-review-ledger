@@ -218,10 +218,16 @@ class Learning:
         lesson = self.version(conn, scope, version_id)
         sources = conn.execute("SELECT o.*,s.relation FROM lesson_sources s JOIN observations o ON o.repository_id=s.repository_id AND o.id=s.observation_id WHERE s.repository_id=? AND s.version_id=? LIMIT 21", (scope.repository_id, version_id)).fetchall()
         behavior = {"behavior_failure", "behavior_passed", "hypothesis_refuted"}
+        def complete_behavior(row):
+            # Match the structural requirements of behavior-based assessments.
+            # An outcome label on an inspection/note or incomplete report is not
+            # enough to satisfy an automatic behavioral-evidence gate.
+            return (row["outcome"] in behavior and row["kind"] == "test"
+                    and bool(row["details"].strip()) and bool((row["environment"] or "").strip()))
         if (not sources or len(sources) > 20 or any(not r["valid"] or r["outcome"] not in ELIGIBLE_OUTCOMES or r["provenance"] != "agent_reported" or r["relation"] != "supports" for r in sources)):
             return defer("source_quality_requires_review")
         if not lesson["previous_id"]:
-            if not any(r["run_id"] == run_id and r["outcome"] in behavior for r in sources):
+            if not any(r["run_id"] == run_id and complete_behavior(r) for r in sources):
                 return defer("current_run_behavioral_support_required")
         else:
             proposal = conn.execute("SELECT * FROM improvement_proposals WHERE repository_id=? AND candidate_version_id=?", (scope.repository_id, version_id)).fetchone()
@@ -230,7 +236,7 @@ class Learning:
             from .improvements import Improvements
             Improvements.validate_approval(conn, scope, version_id)
             evaluations = json.loads(proposal["evaluation_references_json"])
-            if not evaluations or not any(r["id"] in evaluations and r["run_id"] == run_id and r["outcome"] in behavior for r in sources):
+            if not evaluations or not any(r["id"] in evaluations and r["run_id"] == run_id and complete_behavior(r) for r in sources):
                 return defer("current_run_evaluation_required")
             rows = conn.execute("SELECT u.*,r.review_id FROM improvement_outcomes i JOIN lesson_uses u ON u.repository_id=i.repository_id AND u.id=i.outcome_id JOIN runs r ON r.repository_id=u.repository_id AND r.id=u.run_id WHERE i.repository_id=? AND i.improvement_id=? LIMIT 21", (scope.repository_id, proposal["id"])).fetchall()
             if len({r["review_id"] for r in rows}) < 2:
@@ -241,7 +247,7 @@ class Learning:
                 support = json.loads(row["supporting_observation_ids_json"])
                 expected = {"failure_observed": "behavior_failure", "hypothesis_refuted": "hypothesis_refuted",
                             "no_failure_observed": "behavior_passed"}[row["behavioral_result"]]
-                if not support or not any(r["id"] in support and r["run_id"] == row["run_id"] and r["outcome"] == expected for r in sources):
+                if not support or not any(r["id"] in support and r["run_id"] == row["run_id"] and r["outcome"] == expected and complete_behavior(r) for r in sources):
                     return defer("behavioral_outcome_support_required")
         reason = "Bounded automatic lesson policy v1; agent-reported evidence, not independently verified truth."
         self._activate(conn, scope, version_id, reason)

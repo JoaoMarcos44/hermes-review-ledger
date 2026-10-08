@@ -1,6 +1,6 @@
 # Ledger V1: configurable lesson automation
 
-Ledger remains package 1.0.0 with SQLite schema 5 in this integrated V1 build.
+Ledger remains package 1.0.1 with SQLite schema 5 in this integrated V1 build.
 The bundled procedure revision is 2 to record this deliberate contract change;
 this is not a Ledger V2 product. The default is `manual`, including profiles upgrading without a setting. Nothing
 retroactively approves existing candidates. No background worker or model call is
@@ -34,7 +34,10 @@ its retrieval. A completed activation is not undone by a later toggle.
   policy toggles cannot replenish the quota; creating a genuinely new run starts
   that run's separate quota. There is no claimed lifetime or cross-run quota.
 - Initial candidates require 1..20 valid, eligible, agent-reported observations,
-  all linked as supports, including behavioral support from the current run.
+  all linked as supports, including behavioral support from the current run. Behavioral support requires
+  `kind="test"`, a behavioral outcome, nonempty details and an environment; an
+  outcome label on a note or inspection is insufficient. The same structural
+  rule applies to automatic improvement evaluation and outcome support.
   Inspection alone and contradictory source links leave a candidate for review.
 - Revisions require a concrete `improve` proposal linked to the exact active,
   eligible target. Direct `revise` remains a candidate for manual approval.
@@ -92,3 +95,12 @@ There is no new API approval flag, policy toggle, operator identity or filesyste
 path accepted from model tool arguments. This application setting does not change
 host security permissions, authorize model/provider calls, enable imported skills,
 publish files, commit, push, merge, purchase, or alter any personal profile.
+
+## Bugfix boundary
+
+The strengthened behavioral-report gates apply to future automatic promotions.
+They do not silently reclassify previously approved versions or mutate a profile.
+If automatic mode was used before this fix, inspect its audit history and exact
+source reports; suspend or revise questionable versions through the existing
+explicit operator controls. Structural completeness still does not establish
+that a reported test actually executed or that its conclusion is true.

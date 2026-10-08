@@ -4,7 +4,7 @@
 
 V1 is the public product identity. “V1.5” in older development notes names the
 internal adaptive-context milestone, not a released product version. The Python
-package/plugin is **1.0.0**, the immutable procedure revision is **2**, the deterministic
+package/plugin is **1.0.1**, the immutable procedure revision is **2**, the deterministic
 selection policy is **1**, and SQLite schema is **5**, lineage `adaptive-v15`.
 These identities are independent. The optional critic uses prompt version 1.
 
@@ -103,11 +103,23 @@ applicability (repositories, phases, tags, symbols, conditions, exclusions).
 Known structured mismatches exclude content; missing values and prose conditions
 remain uncertain. Constraints use OR within a field and AND between fields.
 
-Descriptor-relative no-follow imports are supported on the tested Linux runtime.
-Where that OS primitive is unavailable, registration fails closed. This is not a
-claim of native Windows optional-import support. Validation does not prove that
-natural-language instructions are safe from prompt injection or licensed for
-redistribution. Attribution remains attached; imported prose is not evidence.
+On POSIX, imports require descriptor-relative no-follow filesystem operations.
+Native Windows uses a separate handle-relative reader: it captures an ordinary
+local drive's native disk-volume mapping, retains every ancestor handle, and
+opens one literal child component at a time. Reparse points (including junctions,
+symlinks and cloud placeholders), offline resources, UNC/network paths, SUBST
+mappings, device/extended namespaces, drive-relative paths, alternate data
+streams, reserved device names, and ambiguous trailing dots/spaces are refused.
+Windows paths are limited to 256 components and the native UTF-16 path bound.
+Write/delete sharing is denied during the read; files open for incompatible
+write access must be closed before retrying. Missing native APIs fail closed;
+there is no resolve-then-open or weaker platform fallback. The CI execution
+report for the exact commit and OS establishes native validation, not portable
+policy mocks. No imported text is executed or fetched remotely.
+
+Validation does not prove that natural-language instructions are safe from
+prompt injection or licensed for redistribution. Attribution remains attached;
+imported prose is not evidence.
 
 3. Inspect outcome diagnoses and exact revisions:
 

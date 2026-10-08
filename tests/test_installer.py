@@ -11,6 +11,7 @@ import time
 import pytest
 
 from review_ledger import installer as i
+from review_ledger.payload_manifest import PAYLOAD_FILES
 
 
 @pytest.fixture
@@ -393,4 +394,76 @@ def test_upgrade_alias_refuses_user_modified_payload(profile):
     before = contents(profile)
     with pytest.raises(i.InstallError, match="Modified or unowned"):
         i.upgrade(profile)
+    assert contents(profile) == before
+
+
+@pytest.mark.parametrize("missing", PAYLOAD_FILES)
+def test_incomplete_runtime_payload_is_refused_before_profile_mutation(profile, tmp_path, monkeypatch, missing):
+    import shutil
+    source = tmp_path / "incomplete-source"
+    root = Path(__file__).resolve().parents[1]
+    shutil.copytree(root, source, ignore=shutil.ignore_patterns(
+        ".git", "build", "dist", "*.egg-info", "__pycache__", ".pytest_cache", "_plugin_payload",
+    ))
+    (source / missing).unlink()
+    monkeypatch.setattr(i, "__file__", str(source / "review_ledger" / "installer.py"))
+    before = contents(profile)
+    with pytest.raises(i.InstallError, match="Incomplete plugin payload"):
+        i.install(profile)
+    assert contents(profile) == before
+
+
+def test_unrecognized_source_module_is_not_silently_bundled(profile, tmp_path, monkeypatch):
+    import shutil
+    source = tmp_path / "unexpected-source"
+    root = Path(__file__).resolve().parents[1]
+    shutil.copytree(root, source, ignore=shutil.ignore_patterns(
+        ".git", "build", "dist", "*.egg-info", "__pycache__", ".pytest_cache", "_plugin_payload",
+    ))
+    (source / "review_ledger" / "obsolete_module.py").write_bytes(b"# Stale source module\n")
+    monkeypatch.setattr(i, "__file__", str(source / "review_ledger" / "installer.py"))
+    before = contents(profile)
+    with pytest.raises(i.InstallError, match="Unrecognized plugin payload files"):
+        i.install(profile)
+    assert contents(profile) == before
+
+
+def test_payload_inventory_is_never_executed_from_selected_source(tmp_path, monkeypatch):
+    import shutil
+    source = tmp_path / "selected-source"
+    root = Path(__file__).resolve().parents[1]
+    shutil.copytree(root, source, ignore=shutil.ignore_patterns(
+        ".git", "build", "dist", "*.egg-info", "__pycache__", ".pytest_cache", "_plugin_payload",
+    ))
+    contents = b'raise AssertionError("Selected source inventory must not execute")\n'
+    (source / "review_ledger" / "payload_manifest.py").write_bytes(contents)
+    monkeypatch.setattr(i, "__file__", str(source / "review_ledger" / "installer.py"))
+    assert i._payload()["review_ledger/payload_manifest.py"] == contents
+
+
+def test_payload_linked_directory_is_rejected_before_enumeration(profile, tmp_path, monkeypatch):
+    import shutil
+    source = tmp_path / "linked-source"
+    root = Path(__file__).resolve().parents[1]
+    shutil.copytree(root, source, ignore=shutil.ignore_patterns(
+        ".git", "build", "dist", "*.egg-info", "__pycache__", ".pytest_cache", "_plugin_payload",
+    ))
+    link = source / "review_ledger" / "resources"
+    external = tmp_path / "external-resources"
+    link.rename(external)
+    if os.name == "nt":
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(external)],
+                       check=True, capture_output=True)
+    else:
+        link.symlink_to(external, target_is_directory=True)
+    scandir = os.scandir
+    def no_external_enumeration(path):
+        if not isinstance(path, int) and Path(path).resolve() == external.resolve():
+            raise AssertionError("Linked payload directory was enumerated")
+        return scandir(path)
+    monkeypatch.setattr(os, "scandir", no_external_enumeration)
+    monkeypatch.setattr(i, "__file__", str(source / "review_ledger" / "installer.py"))
+    before = contents(profile)
+    with pytest.raises(i.InstallError, match="link|junction"):
+        i.install(profile)
     assert contents(profile) == before

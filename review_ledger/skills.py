@@ -45,6 +45,15 @@ def _relative(value):
 
 def _read(root: Path, relative: str) -> str:
     """Walk all components with no-follow descriptors; never follow a link race."""
+    if os.name == "nt":
+        from .windows_import import read_bytes
+        try:
+            result = read_bytes(root, relative, MAX_FILE_BYTES).decode("utf-8")
+        except UnicodeError as exc:
+            raise LedgerError("unsafe_path", "Cannot import selected regular UTF-8 text") from exc
+        if "\x00" in result:
+            raise LedgerError("unsupported_resource", "Binary resources are unsupported")
+        return result
     if not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
         raise LedgerError("unsupported_platform", "Safe descriptor-relative local import is unavailable")
     # Do not normalize away operator-supplied traversal components.
