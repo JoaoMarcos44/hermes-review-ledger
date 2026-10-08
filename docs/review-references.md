@@ -78,7 +78,9 @@ prepare rather than altering an existing manifest.
 
 Use `ledger_record` action `invalidate_external_reference` with `reference_id`
 and `reason`, under the current owned run of the same PR. The invalidated snapshot
-and audit history remain available in bounded exports. Fresh context excludes
+remains available in bounded exports, including its invalidation reason and time.
+The separate audit events are retained in SQLite and backups; V1 exports do not
+include that audit history. Fresh context excludes
 it; resuming a manifest that depended on it fails closed.
 
 A reference ID cannot substitute for an observation ID in an assessment, lesson

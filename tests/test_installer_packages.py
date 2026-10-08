@@ -360,7 +360,7 @@ print(json.dumps([version('hermes-review-ledger'), __version__, SCHEMA_VERSION, 
     assert (package.source / "scripts" / "benchmark_compression.py").is_file()
 
 
-@pytest.mark.parametrize("old_version", ["0.4.0", "1.0.0"])
+@pytest.mark.parametrize("old_version", ["0.4.0", "1.0.0", "1.0.1"])
 def test_installed_cli_upgrades_owned_prior_versions_and_preserves_data(installed_package, tmp_path, old_version):
     """Owned synthetic prior-version payloads exercise the existing manifest format.
 

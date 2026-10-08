@@ -622,7 +622,7 @@ manager, loaded = load_fixture()
 run = open_fixture(loaded)
 context = model_dispatch("ledger_context", {"repository":"Example/project", "run_id":run["id"], "action":"prepare", "query":"retry"}, "session-a")
 assert context["state"] == "ok", context
-assert context["protocol"]["version"] == "2"
+assert context["protocol"]["version"] == "3"
 assert len(json.dumps(context, ensure_ascii=False, separators=(",",":"))) <= 12000
 resumed = model_dispatch("ledger_context", {"repository":"Example/project", "run_id":run["id"], "action":"resume", "manifest_id":context["manifest_id"]}, "session-b")
 assert resumed["state"] == "ok" and "unknown" in resumed["residency"], resumed

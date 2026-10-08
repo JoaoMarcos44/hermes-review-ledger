@@ -66,10 +66,37 @@ No training, changed model weights, empirical quality improvement or token/cost
 saving is claimed. A conditional lesson is guidance that must be checked in each
 new investigation, not authority to execute commands or bypass permissions.
 
+## Untrusted content and reported evidence
+
+The proactive step increases how often the current agent considers proposing a
+lesson; it does not add an independent evidence capture or attestation service.
+The stable procedure and bundled skill require the agent to treat repository
+text, copied logs, tool-output text, optional skills and recalled lessons as
+untrusted data, not instructions to create evidence or modify policy. Behavioral
+reports must describe authorized checks actually observed through host tools and
+reported by the agent. When execution cannot be distinguished from copied
+claims, the procedure records an incomplete note and skips proactive proposal.
+
+These are agent-workflow requirements, not a claim that string validation detects
+prompt injection. A false but structurally complete report can still satisfy the
+existing automatic gate if the agent violates that procedure. This trust limit
+already existed for explicit proposals in 1.0.1; proactive creation increases its
+exposure rather than introducing a new tool permission. The backend assigns
+`agent_reported`, rejects caller-supplied provenance/approval and foreign source
+IDs, and preserves revocation checks. Tests characterize those boundaries with
+synthetic data; they do not demonstrate resistance of a real model to adversarial
+prompts. Manual mode remains the default. Explicit operator opt-in continues to
+authorize eligible automatic activations without per-lesson confirmation; an
+operator requiring individual review should select manual mode.
+
 ## Review, invalidate, reverse
 
-`inspect`, ordinary recall/detail and the existing export show the exact version
-and source provenance; export includes audit history. Manual `approve`, `suspend`,
+`inspect` and ordinary recall/detail show an exact lesson version and its source
+provenance; run exports include versions referenced by the exported lesson uses.
+`automation-status` reports the effective policy and its latest policy event ID,
+not a history of policy changes. The SQLite database records audit events and
+backups preserve them, but V1 has no audit-history CLI or audit-event export.
+Manual `approve`, `suspend`,
 `restrict`, and source `invalidate` remain available. Invalidating a source prevents
 retrieval/use of dependent versions through the existing eligibility checks.
 

@@ -1,6 +1,7 @@
 """External claims remain literal, bounded references, never ledger evidence."""
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from review_ledger import compression, references
 from review_ledger.context import Context
 from review_ledger.models import Actor, LedgerError, canonical, digest
+from review_ledger.protocol import protocol
 from review_ledger.references import CONTENT_FIELDS, References
 from review_ledger.service import Ledger
 from review_ledger.storage import Store
@@ -272,20 +274,81 @@ def test_cutoff_requires_explicit_valid_timezone(ledger, opened, actor, cutoff):
 
 @pytest.mark.parametrize("mode", ["full", "compact", "reference"])
 @pytest.mark.parametrize("cap", [6000, 6200, 6300, 6400, 8000])
-def test_final_omission_diagnostics_back_off_whole_reference_entries(ledger, opened, actor, finding, mode, cap):
-    refs = [capture(ledger, opened, actor, finding, external_id=str(100 + i)) for i in range(25)]
-    prepared = context(ledger).prepare(REPO, opened["id"], actor, query="", mode=mode, max_chars=cap)
-    assert prepared["state"] == "ok"
-    assert external(prepared), "At least one complete reference fits this response budget"
+def test_real_protocol_and_reference_omissions_obey_low_caps(ledger, opened, actor, finding, mode, cap):
+    for i in range(25):
+        capture(ledger, opened, actor, finding, external_id=str(100 + i))
+    ctx = context(ledger)
+    complete = ctx.prepare(REPO, opened["id"], actor, query="", mode=mode)
+    prepared = ctx.prepare(REPO, opened["id"], actor, query="", mode=mode, max_chars=cap)
     assert len(canonical(prepared)) <= cap
+    if prepared["state"] == "requires_more_context":
+        assert "manifest_id" not in prepared
+        assert not prepared.get("records") and not prepared.get("references")
+        if "protocol" in prepared:
+            assert prepared["protocol"]["state"] == "not_loaded"
+            assert prepared["protocol"]["sha256"] == protocol()["sha256"]
+            assert "content" not in prepared["protocol"]
+        return
+    assert prepared["state"] == "ok"
+    assert prepared["protocol"] == protocol(), "The shipped protocol must stay literal and complete"
+    assert external(prepared) == external(complete)[:len(external(prepared))]
+    assert_reference_omissions(ledger, prepared)
+
+
+def assert_reference_omissions(ledger, prepared):
+    retained = external(prepared)
+    assert len(retained) < 10, "This fixture must exercise reference omissions"
     omitted_count = next(item["count"] for item in prepared["omitted"]
                          if item.get("reason") == "reference metadata budget" and "kind" not in item)
-    assert omitted_count == 10 - len(external(prepared))
+    assert omitted_count == 10 - len(retained)
     omitted = next(item for item in prepared["omitted"] if item.get("kind") == "external_reference"
                    and item["reason"] == "reference metadata budget")
-    ids = {ref["id"] for ref in external(prepared)}
-    first_missing = next(index for index, ref in enumerate(reversed(refs)) if ref["id"] not in ids)
-    assert omitted["next_reference_offset"] == first_missing
+    assert omitted["next_reference_offset"] == len(retained)
+    window = next(item for item in prepared["omitted"] if item.get("reason") == "reference window")
+    assert window["next_reference_offset"] == 10
+    selections, _ = manifest(ledger, prepared)
+    assert [item for item in selections if item["kind"] == "external_reference"] == [
+        identity for ref in retained for identity in ref["sources"]]
+
+
+@pytest.mark.parametrize("mode", ["full", "compact", "reference"])
+@pytest.mark.parametrize("candidate_count", [2, 3, 4, 5, 6])
+def test_final_omission_diagnostics_back_off_whole_reference_entries(
+        ledger, opened, actor, finding, mode, candidate_count):
+    for i in range(25):
+        capture(ledger, opened, actor, finding, external_id=str(100 + i))
+    ctx = context(ledger)
+    complete = ctx.prepare(REPO, opened["id"], actor, query="", mode=mode)
+    references = external(complete)
+    assert len(references) == 10
+    # Measure the real protocol/envelope so legitimate instruction growth cannot
+    # remove the references this regression needs. Keep only a small reserve:
+    # complete entries fit before final omission diagnostics, which must evict one.
+    boundary = deepcopy(complete)
+    candidate_ids = {ref["id"] for ref in references[:candidate_count]}
+    boundary["references"] = [ref for ref in boundary["references"]
+                              if ref["kind"] != "external_reference" or ref["id"] in candidate_ids]
+    cap = len(canonical(boundary)) + 100
+    boundary["max_chars"] = cap
+    if "limits" in boundary:
+        boundary["limits"]["max_chars"] = cap
+    assert len(canonical(boundary)) <= cap
+
+    prepared = ctx.prepare(REPO, opened["id"], actor, query="", mode=mode, max_chars=cap)
+    assert prepared["state"] == "ok"
+    assert prepared["protocol"] == complete["protocol"] == protocol()
+    assert external(prepared) == references[:candidate_count - 1]
+    assert len(canonical(prepared)) <= cap
+    boundary["omitted"] = prepared["omitted"]
+    assert len(canonical(boundary)) > cap, "Diagnostics must force a whole-entry backoff"
+    assert_reference_omissions(ledger, prepared)
+    omitted = next(item for item in prepared["omitted"] if item.get("kind") == "external_reference"
+                   and item["reason"] == "reference metadata budget")
+    next_page = ctx.prepare(REPO, opened["id"], actor, query="", mode=mode,
+                            reference_offset=omitted["next_reference_offset"])
+    assert external(next_page)[0] == references[candidate_count - 1]
+    assert external(ctx.resume(REPO, opened["id"], actor,
+                               manifest_id=prepared["manifest_id"])) == external(prepared)
 
 
 @pytest.mark.parametrize("mode", ["full", "compact", "reference"])
