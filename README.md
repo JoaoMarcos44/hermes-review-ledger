@@ -336,7 +336,7 @@ The [original bundled skill](skills/review-ledger/SKILL.md) documents all operat
 
 Learning remains within one repository and one resolved profile.
 
-1. Before completing each Ledger-tracked investigation, the bundled agent workflow proactively checks once for a reusable conditional lesson. When the current run provides the required valid behavioral evidence, the agent calls `ledger_lesson(action="propose")` without waiting for the user. No background worker or extra model call is started; no lesson is created when the evidence or generalizable insight is missing.
+1. When an owned investigation is ready to complete, the bundled agent workflow proactively checks once for a reusable conditional lesson and calls `ledger_lesson(action="propose")` when current-run evidence passes the eligibility gates. If the run is being paused or remains incomplete, no lesson is proposed. No background worker or extra model call is started.
 2. A proposal includes a conditional question, application conditions, exclusions, suggested investigation, tags/symbols and eligible observation sources. This is a `candidate`; explicit automatic mode activates only proposals accepted by the bounded policy.
 3. In default manual mode, a local operator inspects and explicitly approves that exact version. Explicit automatic mode can activate eligible proposals under the [bounded policy](docs/lesson-automation.md).
 4. `ledger_recall` returns up to five eligible active versions or compact `lesson_references` with `version_id` and `required_context_chars`. Selection is deterministic, bounded, and based on terms, tags and symbols. SQL filtering and ranking both use Unicode NFC/casefold without changing stored text. No embeddings, probabilities or model calls are used.

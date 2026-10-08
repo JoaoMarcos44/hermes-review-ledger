@@ -23,5 +23,15 @@ def test_host_neutral_protocol_requires_proactive_conditional_lesson_creation():
     normalized = " ".join(protocol.split()).casefold()
     assert protocol.startswith("# Review Ledger procedure 3\n")
     assert "proactively assess the current run for a reusable conditional lesson" in normalized
-    assert "before completing the owned run" in normalized
+    assert "only when the owned investigation is ready to complete" in normalized
     assert "no extra model call or background worker" in normalized
+
+
+def test_paused_or_incomplete_run_never_proposes_a_lesson():
+    skill = SKILL.read_text(encoding="utf-8")
+    skill_section = skill.split("## Automatic conditional lesson creation\n", 1)[1].split("\n## ", 1)[0]
+    protocol = (Path(__file__).resolve().parents[1] / "review_ledger" / "resources" / "protocol.md").read_text(encoding="utf-8")
+    protocol_text = " ".join(protocol.split()).casefold()
+
+    assert "if the run will be paused or remains incomplete, do not propose a lesson" in skill_section.casefold()
+    assert "if missing evidence or budget requires a pause, do not propose a lesson" in protocol_text

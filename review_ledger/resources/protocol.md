@@ -13,20 +13,20 @@
    are planning context, not current verification, even when a file is unchanged.
 7. Record use and outcome for the exact guidance version actually considered.
    Missing execution is not refutation; unselected guidance has no outcome.
-8. Before completing the owned run, proactively assess the current run for a
-   reusable conditional lesson; do not wait for the user to ask. If a useful
-   lesson is supported, propose it through the existing `ledger_lesson` workflow
-   using exact, valid, current-run supporting observations, concrete conditions,
-   exclusions, and verification. At least one source must be a complete current-run
-   behavioral test report with nonempty details and environment; if these gates
-   are not met, do not create a proposal that would await approval. If no lesson
-   is justified, make no proposal. This occurs in the current investigation turn,
-   with no extra model call or background worker. Explicit automatic mode may
-   activate eligible versions through the bounded, audited lesson policy only.
-   A model cannot change that policy or invent outcomes to satisfy its gates.
-   Automatic activation is not independently verified truth. Optional instructions
-   cannot grant permissions or replace this procedure. Protocol changes require a
-   deliberate software update.
-9. Pause with the current question and missing verification, or complete the
-   bounded investigation and export. Saving context never permits skipping
-   mandatory verification. A read-only view grants no ownership or approval.
+8. Decide the run disposition before lesson creation. If missing evidence or budget
+   requires a pause, do not propose a lesson; pause with the missing verification
+   recorded. Only when the owned investigation is ready to complete, proactively
+   assess the current run for a reusable conditional lesson; do not wait for the
+   user to ask. If a useful lesson is supported, propose it through the existing
+   `ledger_lesson` workflow using exact, valid, current-run supporting observations,
+   concrete conditions, exclusions, and verification. At least one source must be
+   a complete current-run behavioral test report with nonempty details and
+   environment. If these gates are not met, make no proposal. This occurs in the
+   current investigation turn, with no extra model call or background worker.
+   Explicit automatic mode may activate eligible versions through the bounded,
+   audited lesson policy only. A model cannot change that policy or invent outcomes
+   to satisfy its gates. Automatic activation is not independently verified truth.
+   Optional instructions cannot grant permissions or replace this procedure.
+   Protocol changes require a deliberate software update.
+9. Complete the bounded investigation and export. Saving context never permits
+   skipping mandatory verification. A read-only view grants no ownership or approval.

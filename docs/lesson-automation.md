@@ -6,8 +6,8 @@ contract; this is not a Ledger V2 product. The default activation mode is
 `manual`, including profiles upgrading without a setting. No lesson is created
 retroactively. No background worker or extra model call is started: the bundled
 agent procedure instructs the current agent to evaluate the owned run and use the
-existing `propose` action before completion, without waiting for the user to ask.
-The agent proposes only when scoped evidence, behavioral-report requirements, and
+existing `propose` action only when completing, without waiting for the user to ask.
+Paused or incomplete runs do not propose lessons. The agent proposes only when scoped evidence, behavioral-report requirements, and
 a reusable conditional lesson all exist. Recording a result can still generate
 a review diagnostic; it never invents new conditions, edits, outcomes, or a
 successful experiment.
