@@ -10,11 +10,13 @@ from run_native_tests import REQUIRED_INTEGRATION_TESTS, summarize_junit
 
 class JUnitGateTests(unittest.TestCase):
     def test_required_contract_matches_real_integration_test_source(self):
-        source = Path(__file__).resolve().parents[2] / "tests" / "test_hermes_integration.py"
-        module = ast.parse(source.read_text(encoding="utf-8"))
-        actual = {node.name for node in module.body
-                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                  and node.name.startswith("test_")}
+        actual = set()
+        for name in ("test_hermes_integration.py", "test_compression_native.py", "test_reference_native.py"):
+            source = Path(__file__).resolve().parents[2] / "tests" / name
+            module = ast.parse(source.read_text(encoding="utf-8"))
+            actual.update(node.name for node in module.body
+                          if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                          and node.name.startswith("test_"))
         self.assertEqual(REQUIRED_INTEGRATION_TESTS, actual)
 
     def report(self, *, omitted=None, outcome=None, core=True):
@@ -22,7 +24,7 @@ class JUnitGateTests(unittest.TestCase):
         suite = ET.SubElement(root, "testsuite")
         for name in sorted(REQUIRED_INTEGRATION_TESTS - {omitted}):
             case = ET.SubElement(suite, "testcase", {
-                "classname": "tests.test_hermes_integration", "name": name})
+                "classname": "tests.test_compression_native" if name.startswith("test_native_") else "tests.test_hermes_integration", "name": name})
             if outcome:
                 ET.SubElement(case, outcome)
         if core:

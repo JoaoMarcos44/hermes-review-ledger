@@ -375,3 +375,22 @@ def test_native_open_file_handling(profile):
             assert kernel.CloseHandle(handle)
         assert i.uninstall(profile)["state"] in {"removed", "absent"}
     assert retained(profile) == before[1]
+
+
+def test_upgrade_alias_is_idempotent_and_explicit(profile, capsys):
+    before = retained(profile)
+    assert i.main(["upgrade", "--profile-dir", str(profile)]) == 0
+    assert '"state": "installed"' in capsys.readouterr().out
+    assert i.main(["upgrade", "--profile-dir", str(profile)]) == 0
+    assert '"state": "unchanged"' in capsys.readouterr().out
+    assert retained(profile) == before
+
+
+def test_upgrade_alias_refuses_user_modified_payload(profile):
+    i.install(profile)
+    target = profile / "plugins" / i.NAME / "plugin.yaml"
+    target.write_text("operator customization\n", encoding="utf-8")
+    before = contents(profile)
+    with pytest.raises(i.InstallError, match="Modified or unowned"):
+        i.upgrade(profile)
+    assert contents(profile) == before

@@ -1,10 +1,11 @@
-# V1.5: controlled procedural improvement pilot
+# V1: optional procedural improvement pilot
 
 ## Release identities and compatibility
 
-V1.5 remains the controlled-context product milestone. The integrated Python
-package/plugin is **0.4.0**, the immutable procedure is **1**, the deterministic
-selection policy is **1**, and SQLite schema is **4**, lineage `adaptive-v15`.
+V1 is the public product identity. “V1.5” in older development notes names the
+internal adaptive-context milestone, not a released product version. The Python
+package/plugin is **1.0.0**, the immutable procedure revision is **2**, the deterministic
+selection policy is **1**, and SQLite schema is **5**, lineage `adaptive-v15`.
 These identities are independent. The optional critic uses prompt version 1.
 
 The integration preserves V1.5 main and combines the feedback protocol (#4),
@@ -13,7 +14,8 @@ disabled by default, and its real pinned-Hermes adapter remains blocked before
 model access or transmission with `critic_route_unverifiable`.
 
 Schema 1, genuine schema 2, and V1.5 schema 3 (`adaptive-v15`) databases migrate
-transactionally to schema 4. The experimental 0.2.0 critic schema 3 is a distinct
+transactionally through schema 4 to schema 5. Existing schema 4 receives the
+additive frozen-reference migration 005. The experimental 0.2.0 critic schema 3 is a distinct
 lineage and is rejected without mutation. Do not change its user_version or
 lineage manually. Stop sessions and preserve a verified experimental backup
 and its artifacts separately with the original 0.2.0 tooling. A verified
@@ -235,3 +237,9 @@ setup, learning and evaluation overhead before amortized comparison. Use
 baseline. Output-size change remains distinct from total tokens/cost. Do not tune
 repeatedly on sealed cases. No real model review or independently adjudicated
 quality improvement is established by the offline mechanism tests.
+
+## Configurable lesson activation
+
+The local V1 automation update adds explicit automatic/manual policy selection.
+Default manual behavior above remains unchanged. See [policy gates, audit and
+rollback](lesson-automation.md). Automated activation is not measured learning.

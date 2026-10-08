@@ -335,3 +335,74 @@ print(json.dumps({"skill": str(tools.SKILL_PATH), "migration_loaded": True}))
     for path, content in sentinels.items():
         assert path.read_bytes() == content
     _unchanged_default_profile(package.environment)
+
+
+def test_v1_identity_and_distribution_metadata(installed_package):
+    """Product identity, schema, and deliberate procedure revisions are independent."""
+    package = installed_package
+    for command in (
+        [package.python, "-I", "-m", "review_ledger", "--version"],
+        [package.console, "--version"],
+    ):
+        assert _run(command, cwd=package.outside, env=package.environment).strip() == "1.0.0"
+    script = """
+from importlib.metadata import version
+import json
+from review_ledger import __version__
+from review_ledger.storage import SCHEMA_VERSION
+from review_ledger.protocol import VERSION
+print(json.dumps([version('hermes-review-ledger'), __version__, SCHEMA_VERSION, VERSION]))
+"""
+    assert json.loads(_run([package.python, "-I", "-c", script],
+                          cwd=package.outside, env=package.environment)) == ["1.0.0", "1.0.0", 5, "2"]
+    assert "version: 1.0.0\n" in (package.source / "plugin.yaml").read_text()
+    assert (package.source / "docs" / "installation.md").is_file()
+    assert (package.source / "scripts" / "benchmark_compression.py").is_file()
+
+
+def test_installed_cli_upgrades_private_04_fixture_and_preserves_data(installed_package, tmp_path):
+    """An owned synthetic 0.4 payload exercises the existing manifest format.
+
+    This is an installer fixture, not a claim to reproduce an historical release
+    or to validate a database migration (covered by schema tests separately).
+    """
+    package = installed_package
+    profile = tmp_path / "old private profile"
+    _profile(profile)
+    target = profile / "plugins" / "review-ledger"
+    target.mkdir(parents=True)
+    old_payload = {
+        "__init__.py": b"# Synthetic private 0.4 plugin fixture\n",
+        "plugin.yaml": b"name: review-ledger\nversion: 0.4.0\n",
+        "review_ledger/__init__.py": b'__version__ = "0.4.0"\n',
+    }
+    for name, data in old_payload.items():
+        path = target / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    marker = target / ".review-ledger-install.json"
+    marker.write_text(json.dumps({
+        "installer": "hermes-review-ledger", "format": 1, "version": "0.4.0",
+        "files": {name: _digest(data) for name, data in old_payload.items()},
+    }), encoding="utf-8")
+    data_dir = profile / "plugin-data" / "review-ledger"
+    data_dir.mkdir(parents=True)
+    kept = data_dir / "review-ledger.sqlite3"
+    # Deliberately opaque: code installation must not open or migrate this file.
+    kept.write_bytes(b"synthetic schema-4 data preserved byte-for-byte\x00")
+    previous = kept.read_bytes()
+    output = _run([package.console, "upgrade", "--profile-dir", profile],
+                  cwd=package.outside, env=package.environment)
+    assert '"state": "upgraded"' in output
+    for name, digest in package.expected_hashes.items():
+        assert _digest((target / name).read_bytes()) == digest
+    assert json.loads(marker.read_text())["version"] == "1.0.0"
+    status = _run([package.console, "status", "--profile-dir", profile],
+                  cwd=package.outside, env=package.environment)
+    assert json.loads(status)["version"] == "1.0.0"
+    _run([package.console, "uninstall", "--profile-dir", profile],
+         cwd=package.outside, env=package.environment)
+    assert not target.exists()
+    assert kept.read_bytes() == previous
+    assert (profile / "config.yaml").read_bytes() == CONFIG
+    _unchanged_default_profile(package.environment)

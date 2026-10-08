@@ -486,6 +486,39 @@ lessons = model_dispatch("ledger_recall", query, "session-b")["lessons"]
 assert len(lessons) == 1 and lessons[0]["id"] == proposal["version_id"], lessons
 assert operator("suspend", "operator-suspend")["state"] == "suspended"
 assert model_dispatch("ledger_recall", query, "session-b")["lessons"] == []
+def cli(*argv):
+    args = parser.parse_args(["review-ledger", *argv])
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        code = args.func(args)
+    result = json.loads(output.getvalue())
+    assert code == 0, result
+    return result
+assert cli("automation-status", "Example/project")["mode"] == "manual"
+assert cli("automation", "Example/project", "automatic", "--reason", "Synthetic opt-in",
+           "--request-key", "policy-on")["mode"] == "automatic"
+behavior = model_dispatch("ledger_record", {
+    **base, "action": "observation", "request_key": "behavior-source", "data": {
+    "kind": "test", "outcome": "behavior_passed", "summary": "Synthetic case passed",
+    "details": "Synthetic fixture returned the expected value", "environment": "Isolated test",
+    "limitations": "Agent reported, no production evidence"}}, "session-a")
+lesson = {"question": "Does this behavior apply?", "conditions": ["Synthetic case"],
+    "exclusions": ["Production"], "verification": "Run a fresh check",
+    "sources": [{"observation_id": behavior["observation_id"], "relation": "supports"}]}
+auto = model_dispatch("ledger_lesson", {**base, "action": "propose", "request_key": "auto-candidate",
+    "data": lesson}, "session-a")
+assert auto["state"] == "active" and auto["automation"]["activated"], auto
+assert cli("automation", "Example/project", "manual", "--reason", "Synthetic disable",
+           "--request-key", "policy-off")["mode"] == "manual"
+manual = model_dispatch("ledger_lesson", {**base, "action": "propose", "request_key": "manual-again",
+    "data": lesson}, "session-a")
+assert manual["state"] == "candidate" and not manual["automation"]["activated"], manual
+for field in ("approved", "automation_mode", "lesson_automation_mode", "policy_version"):
+    forbidden = model_dispatch("ledger_lesson", {**base, "action": "propose", "request_key": "inject-" + field,
+        "data": {**lesson, field: "automatic"}}, "session-a")
+    assert forbidden["error"]["code"] == "invalid_input", forbidden
+restored = operator("rollback", "operator-rollback")
+assert restored["state"] == "active" and restored["version_id"] != proposal["version_id"], restored
 """)
 
 
@@ -589,7 +622,7 @@ manager, loaded = load_fixture()
 run = open_fixture(loaded)
 context = model_dispatch("ledger_context", {"repository":"Example/project", "run_id":run["id"], "action":"prepare", "query":"retry"}, "session-a")
 assert context["state"] == "ok", context
-assert context["protocol"]["version"] == "1"
+assert context["protocol"]["version"] == "2"
 assert len(json.dumps(context, ensure_ascii=False, separators=(",",":"))) <= 12000
 resumed = model_dispatch("ledger_context", {"repository":"Example/project", "run_id":run["id"], "action":"resume", "manifest_id":context["manifest_id"]}, "session-b")
 assert resumed["state"] == "ok" and "unknown" in resumed["residency"], resumed

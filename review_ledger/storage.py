@@ -16,8 +16,8 @@ from uuid import uuid4
 
 from .models import Actor, IDENTIFIER, LedgerError, Scope, canonical, digest, integer, text
 
-SCHEMA_VERSION = 4
-MIGRATIONS = ("001_initial.sql", "002_query_indexes.sql", "003_adaptive_context.sql", "004_critic.sql")
+SCHEMA_VERSION = 5
+MIGRATIONS = ("001_initial.sql", "002_query_indexes.sql", "003_adaptive_context.sql", "004_critic.sql", "005_review_references.sql")
 V2_TABLES = frozenset({
     "ledger_meta", "repositories", "reviews", "runs", "observations", "findings",
     "assessments", "assessment_sources", "lesson_versions", "lesson_sources",
@@ -33,8 +33,10 @@ CRITIC_TABLES = frozenset({
     "critic_items", "critic_objections", "critic_assessments",
     "critic_assessment_sources", "critic_lesson_links",
 })
-LEDGER_TABLES = V15_TABLES | CRITIC_TABLES
-SCHEMA_TABLES = {1: V2_TABLES, 2: V2_TABLES, 3: V15_TABLES, 4: LEDGER_TABLES}
+V4_TABLES = V15_TABLES | CRITIC_TABLES
+REFERENCE_TABLES = frozenset({"external_review_references"})
+LEDGER_TABLES = V4_TABLES | REFERENCE_TABLES
+SCHEMA_TABLES = {1: V2_TABLES, 2: V2_TABLES, 3: V15_TABLES, 4: V4_TABLES, 5: LEDGER_TABLES}
 EXPERIMENTAL_CRITIC_MIGRATION = (
     "Experimental critic schema 3 cannot be upgraded automatically. Stop all ledger "
     "sessions and back up this database with the matching experimental critic build. "
@@ -85,7 +87,7 @@ def _table_layout(conn, table):
     )
 
 
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=5)
 def _expected_layout(version):
     """Derive historical layouts from the unchanged, packaged migration chain."""
     with closing(sqlite3.connect(":memory:")) as reference:
@@ -201,6 +203,8 @@ class Store:
         if not stored or stored[0] != self.profile_key:
             raise LedgerError("profile_mismatch", "This database belongs to a different resolved profile")
         lineage = conn.execute("SELECT value FROM ledger_meta WHERE key='schema_lineage'").fetchone()
+        if version < 5 and REFERENCE_TABLES.intersection(tables):
+            raise LedgerError("schema_lineage_conflict", "External reference tables precede their declared schema; no changes made")
         if version < 4 and CRITIC_TABLES.intersection(tables):
             raise LedgerError("schema_lineage_conflict", EXPERIMENTAL_CRITIC_MIGRATION)
         if version >= 3:

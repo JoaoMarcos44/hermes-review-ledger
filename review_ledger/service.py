@@ -7,6 +7,7 @@ import json
 from .models import (Actor, Assessment, ELIGIBLE_OUTCOMES, LedgerError, OUTCOMES,
                      Scope, canonical, choice, digest, fields, integer, sha, strings, text)
 from .storage import Store, new_id, now
+from .references import References, REFERENCE_FIELDS, REQUIRED_REFERENCE_FIELDS
 
 
 MAX_SNAPSHOT_CHARS = 60_000
@@ -408,15 +409,24 @@ class Ledger:
     def record(self, repository: str, run_id: str, actor: Actor, generation: int,
                action: str, data: dict, request_key: str) -> dict:
         scope = self.scope(repository)
-        choice(action, "action", {"observation", "finding", "assessment", "invalidate_observation"})
+        choice(action, "action", {"observation", "finding", "assessment", "invalidate_observation",
+                                   "external_reference", "invalidate_external_reference"})
         integer(generation, "generation", 1, 2**63 - 1)
         validators = {
             "observation": ({"kind", "outcome", "summary", "details", "limitations", "environment", "command_text", "reproduction_patch_sha", "artifact_text"}, {"kind", "outcome", "summary", "limitations"}),
             "finding": ({"claim"}, {"claim"}),
+            "external_reference": (REFERENCE_FIELDS, REQUIRED_REFERENCE_FIELDS),
+            "invalidate_external_reference": ({"reference_id", "reason"}, {"reference_id", "reason"}),
             "assessment": ({"finding_id", "state", "basis", "rationale", "limitations", "observation_ids", "resolution"}, {"finding_id", "state", "basis", "rationale", "limitations", "observation_ids"}),
             "invalidate_observation": ({"observation_id", "reason"}, {"observation_id", "reason"}),
         }
         fields(data, *validators[action])
+        if action in {"external_reference", "invalidate_external_reference"}:
+            # Check Unicode before Store.write hashes the untrusted raw payload.
+            try:
+                canonical(data).encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise LedgerError("invalid_input", "External reference data requires valid Unicode text") from exc
         payload = {"actor": actor.session_id, "generation": generation, "action": action, "data": data}
 
         # Stage bounded optional files outside SQLite's writer transaction.
@@ -447,6 +457,10 @@ class Ledger:
                 return {"state": "proposed", "finding_id": ident, "assessment": "unverified"}
             if action == "assessment":
                 return self._assessment(conn, scope, run, data)
+            if action == "external_reference":
+                return References.record(conn, scope, run, data, actor.session_id)
+            if action == "invalidate_external_reference":
+                return References.invalidate(conn, scope, run, data, actor.session_id)
             obs = conn.execute("SELECT * FROM observations WHERE repository_id=? AND id=? AND run_id=?", (scope.repository_id, data["observation_id"], run_id)).fetchone()
             if obs is None:
                 raise LedgerError("scope_not_found", "Observation is not in this run")

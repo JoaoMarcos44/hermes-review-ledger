@@ -42,7 +42,7 @@ def test_actual_v2_upgrade_preserves_sources_journal_and_receipts(v2_store):
         receipts = conn.execute("SELECT * FROM idempotency ORDER BY request_key").fetchall()
         journal = conn.execute("PRAGMA journal_mode").fetchone()[0]
     with store.connect() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
         assert [tuple(r) for r in conn.execute("SELECT * FROM observations")] == before
         assert [tuple(r) for r in conn.execute("SELECT * FROM idempotency ORDER BY request_key")] == receipts
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == journal
@@ -68,7 +68,7 @@ def test_migration_failure_rolls_back_all_ddl_and_version(v2_store, monkeypatch)
         assert conn.execute("SELECT id FROM observations").fetchone()[0] == oid
         assert not conn.execute("SELECT name FROM sqlite_master WHERE name='critic_runs'").fetchone()
     with store.connect() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
 
 
 def test_wrong_profile_cannot_migrate_v2(v2_store):
@@ -89,7 +89,7 @@ def test_concurrent_v2_initialization(v2_store):
         with Store(store.data_dir, store.profile_key).connect() as conn:
             return conn.execute("PRAGMA user_version").fetchone()[0]
     with ThreadPoolExecutor(max_workers=4) as pool:
-        assert list(pool.map(migrate, range(4))) == [4] * 4
+        assert list(pool.map(migrate, range(4))) == [storage.SCHEMA_VERSION] * 4
     with store.connect() as conn:
         assert conn.execute("SELECT count(*) FROM observations").fetchone()[0] == 1
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -140,8 +140,8 @@ def test_backup_restores_all_adaptive_and_critic_tables(ledger, opened, actor, o
     restored.data_dir.mkdir()
     shutil.copyfile(backup["path"], restored.path)
     with ledger.store.connect() as original, restored.connect() as copy:
-        assert copy.execute("PRAGMA user_version").fetchone()[0] == 4
-        for table in sorted(storage.LEDGER_TABLES):
+        assert copy.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
+        for table in sorted(storage.V4_TABLES):
             rows = [tuple(r) for r in original.execute(f"SELECT * FROM {table} ORDER BY rowid")]
             assert rows, f"Backup fixture must exercise {table}"
             assert rows == [tuple(r) for r in copy.execute(f"SELECT * FROM {table} ORDER BY rowid")]

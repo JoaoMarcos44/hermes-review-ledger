@@ -9,3 +9,7 @@ include .github/workflows/native-tests.yml
 
 recursive-include review_ledger/resources *.md
 recursive-include docs/assets *.gif *.png
+
+include scripts/benchmark_compression.py
+
+include scripts/benchmark_references.py

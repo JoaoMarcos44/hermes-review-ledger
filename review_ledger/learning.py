@@ -33,9 +33,10 @@ def _decode_version(row) -> dict:
 
 
 class Learning:
-    def __init__(self, store: Store, *, improvements_enabled: bool = False):
+    def __init__(self, store: Store, *, improvements_enabled: bool = False, automation_mode: str = "manual"):
         self.store = store
         self.improvements_enabled = improvements_enabled
+        self.automation_mode = choice(automation_mode, "configured lesson_automation_mode", {"automatic", "manual"})
 
     @staticmethod
     def critic_links_eligible(conn, scope: Scope, assessment_ids, source_ids, run_id=None) -> bool:
@@ -149,12 +150,128 @@ class Learning:
             for assessment_id in critic_ids:
                 conn.execute("INSERT INTO critic_lesson_links VALUES (?,?,?)", (scope.repository_id, ident, assessment_id))
             self.store.audit(conn, scope, ident, "proposed", actor.session_id, {"run_id": run_id})
-            return {"state": "candidate", "lesson_id": lesson_id, "version_id": ident, "version": version,
-                    "approval_required": "Separate local operator CLI operation"}
+            result = {"state": "candidate", "lesson_id": lesson_id, "version_id": ident, "version": version,
+                      "approval_required": "Separate local operator CLI operation"}
+            # Improvements must install their complete provenance graph before
+            # activation. No nested receipt or intermediate commit is allowed.
+            if _conn is None:
+                result.update(self._automate(conn, scope, run_id, ident))
+            return result
         if _conn is not None:
             return write(_conn)
         return self.store.write(scope, "lesson_propose", run_id, request_key,
                                 {"actor": actor.session_id, "generation": generation, "data": data}, write)
+
+    @staticmethod
+    def _activate(conn, scope, version_id, reason):
+        from .improvements import Improvements
+        lesson = Learning.version(conn, scope, version_id)
+        Improvements.validate_approval(conn, scope, version_id)
+        if lesson["state"] != "candidate":
+            raise LedgerError("invalid_transition", "Only a new candidate version can be approved; revise suspended knowledge first")
+        if not lesson["critic_links_eligible"] or not lesson["sources"] or any(not s["valid"] or s["outcome"] not in ELIGIBLE_OUTCOMES for s in lesson["sources"]):
+            raise LedgerError("ineligible_source", "An invalid source prevents approval")
+        newer = conn.execute("SELECT 1 FROM lesson_versions WHERE lesson_id=? AND version>? AND approved_at IS NOT NULL", (lesson["lesson_id"], lesson["version"])).fetchone()
+        if newer:
+            raise LedgerError("version_conflict", "A newer lesson version has already been approved")
+        conn.execute("UPDATE lesson_versions SET state='retired',reason='Superseded by approved version' WHERE lesson_id=? AND state='active'", (lesson["lesson_id"],))
+        conn.execute("UPDATE lesson_versions SET state='active',approved_at=?,reason=? WHERE id=?", (now(), reason, version_id))
+        Improvements.record_operator(conn, scope, version_id, "approve")
+
+    def _policy(self, conn, scope):
+        # Persisted operator choices override host defaults, including a stale
+        # host object that was constructed before a disable command completed.
+        row = conn.execute("SELECT id,detail_json FROM audit_events WHERE repository_id=? AND entity_id='lesson_automation_policy' AND action='automation_policy' ORDER BY rowid DESC LIMIT 1", (scope.repository_id,)).fetchone()
+        return {"mode": json.loads(row["detail_json"])["mode"] if row else self.automation_mode,
+                "policy_version": "1", "policy_event_id": row["id"] if row else None,
+                "origin": "local_operator" if row else "profile_configuration",
+                "max_activations_per_run": 3}
+
+    def automation_status(self, scope):
+        with self.store.connect() as conn:
+            self.store.repository(conn, scope)
+            return self._policy(conn, scope)
+
+    def automation_policy(self, scope, mode, reason, request_key):
+        choice(mode, "mode", {"automatic", "manual"})
+        text(reason, "reason", 4000)
+        def write(conn):
+            self.store.audit(conn, scope, "lesson_automation_policy", "automation_policy", "local_operator",
+                             {"mode": mode, "reason": reason, "policy_version": "1"})
+            return self._policy(conn, scope)
+        return self.store.write(scope, "automation_policy", "lesson_automation_policy", request_key,
+                                {"mode": mode, "reason": reason}, write)
+
+    def _automate(self, conn, scope, run_id, version_id):
+        policy = self._policy(conn, scope)
+        result = {"automation": {**policy, "activated": False}}
+        def defer(reason):
+            result["automation"]["reason"] = reason
+            return result
+        if policy["mode"] != "automatic":
+            return defer("manual_mode")
+        # Persisted bounded quota; retries use the original outer receipt and
+        # do not consume another slot. A policy toggle cannot reset this count.
+        count = conn.execute("SELECT COUNT(*) FROM audit_events WHERE repository_id=? AND entity_id=? AND action='automatic_lesson_activation'", (scope.repository_id, run_id)).fetchone()[0]
+        if count >= policy["max_activations_per_run"]:
+            return defer("run_activation_limit")
+        lesson = self.version(conn, scope, version_id)
+        sources = conn.execute("SELECT o.*,s.relation FROM lesson_sources s JOIN observations o ON o.repository_id=s.repository_id AND o.id=s.observation_id WHERE s.repository_id=? AND s.version_id=? LIMIT 21", (scope.repository_id, version_id)).fetchall()
+        behavior = {"behavior_failure", "behavior_passed", "hypothesis_refuted"}
+        if (not sources or len(sources) > 20 or any(not r["valid"] or r["outcome"] not in ELIGIBLE_OUTCOMES or r["provenance"] != "agent_reported" or r["relation"] != "supports" for r in sources)):
+            return defer("source_quality_requires_review")
+        if not lesson["previous_id"]:
+            if not any(r["run_id"] == run_id and r["outcome"] in behavior for r in sources):
+                return defer("current_run_behavioral_support_required")
+        else:
+            proposal = conn.execute("SELECT * FROM improvement_proposals WHERE repository_id=? AND candidate_version_id=?", (scope.repository_id, version_id)).fetchone()
+            if proposal is None:
+                return defer("outcome_linked_revision_required")
+            from .improvements import Improvements
+            Improvements.validate_approval(conn, scope, version_id)
+            evaluations = json.loads(proposal["evaluation_references_json"])
+            if not evaluations or not any(r["id"] in evaluations and r["run_id"] == run_id and r["outcome"] in behavior for r in sources):
+                return defer("current_run_evaluation_required")
+            rows = conn.execute("SELECT u.*,r.review_id FROM improvement_outcomes i JOIN lesson_uses u ON u.repository_id=i.repository_id AND u.id=i.outcome_id JOIN runs r ON r.repository_id=u.repository_id AND r.id=u.run_id WHERE i.repository_id=? AND i.improvement_id=? LIMIT 21", (scope.repository_id, proposal["id"])).fetchall()
+            if len({r["review_id"] for r in rows}) < 2:
+                return defer("two_distinct_reviews_required_not_proof_of_independence")
+            for row in rows:
+                if row["execution_block"] != "none" or row["behavioral_result"] not in {"failure_observed", "hypothesis_refuted", "no_failure_observed"} or row["applicability"] != "applicable" or row["feedback_applicability"] != "applicable" or row["usefulness"] == "inconclusive" or row["contribution"] == "unknown":
+                    return defer("outcome_quality_requires_review")
+                support = json.loads(row["supporting_observation_ids_json"])
+                expected = {"failure_observed": "behavior_failure", "hypothesis_refuted": "hypothesis_refuted",
+                            "no_failure_observed": "behavior_passed"}[row["behavioral_result"]]
+                if not support or not any(r["id"] in support and r["run_id"] == row["run_id"] and r["outcome"] == expected for r in sources):
+                    return defer("behavioral_outcome_support_required")
+        reason = "Bounded automatic lesson policy v1; agent-reported evidence, not independently verified truth."
+        self._activate(conn, scope, version_id, reason)
+        details = {**policy, "run_id": run_id, "version_id": version_id, "reason": reason,
+                   "distinct_reviews_are_not_independence": True}
+        self.store.audit(conn, scope, version_id, "automatic_approve", "lesson_policy_v1", details)
+        self.store.audit(conn, scope, run_id, "automatic_lesson_activation", "lesson_policy_v1", details)
+        result.update(state="active", approval_required=None)
+        result["automation"].update(activated=True, reason=reason)
+        return result
+
+    def rollback(self, scope, version_id, reason, request_key):
+        """Copy a historical strategy into a new approved version, never erase history."""
+        text(reason, "reason", 4000)
+        def write(conn):
+            target = self.version(conn, scope, version_id)
+            if target["approved_at"] is None:
+                raise LedgerError("invalid_transition", "Rollback restores previously approved versions only")
+            if not target["critic_links_eligible"] or not target["sources"] or any(not s["valid"] or s["outcome"] not in ELIGIBLE_OUTCOMES for s in target["sources"]):
+                raise LedgerError("ineligible_source", "Rollback cannot restore invalid evidence")
+            latest = conn.execute("SELECT id,version FROM lesson_versions WHERE repository_id=? AND lesson_id=? ORDER BY version DESC LIMIT 1", (scope.repository_id, target["lesson_id"])).fetchone()
+            ident = new_id("version")
+            conn.execute("""INSERT INTO lesson_versions (id,repository_id,lesson_id,version,previous_id,question,conditions_json,exclusions_json,verification,tags_json,symbols_json,state,created_at)
+                SELECT ?,repository_id,lesson_id,?, ?,question,conditions_json,exclusions_json,verification,tags_json,symbols_json,'candidate',? FROM lesson_versions WHERE repository_id=? AND id=?""", (ident, latest["version"] + 1, latest["id"], now(), scope.repository_id, version_id))
+            conn.execute("INSERT INTO lesson_sources SELECT repository_id,?,observation_id,relation FROM lesson_sources WHERE repository_id=? AND version_id=?", (ident, scope.repository_id, version_id))
+            conn.execute("INSERT INTO critic_lesson_links SELECT repository_id,?,assessment_id FROM critic_lesson_links WHERE repository_id=? AND version_id=?", (ident, scope.repository_id, version_id))
+            self._activate(conn, scope, ident, reason)
+            self.store.audit(conn, scope, ident, "rollback", "local_operator", {"restored_from_version_id": version_id, "previous_version_id": latest["id"], "reason": reason})
+            return {"state": "active", "version_id": ident, "restored_from_version_id": version_id, "version": latest["version"] + 1}
+        return self.store.write(scope, "lesson_rollback", version_id, request_key, {"reason": reason}, write)
 
     def operator(self, scope: Scope, version_id: str, action: str, reason: str, request_key: str):
         choice(action, "operator action", {"approve", "suspend", "restrict"})
@@ -164,18 +281,7 @@ class Learning:
         def write(conn):
             lesson = self.version(conn, scope, version_id)
             if action == "approve":
-                from .improvements import Improvements
-                Improvements.validate_approval(conn, scope, version_id)
-                if lesson["state"] != "candidate":
-                    raise LedgerError("invalid_transition", "Only a new candidate version can be approved; revise suspended knowledge first")
-                if not lesson["critic_links_eligible"] or not lesson["sources"] or any(not s["valid"] or s["outcome"] not in ELIGIBLE_OUTCOMES for s in lesson["sources"]):
-                    raise LedgerError("ineligible_source", "An invalid source prevents approval")
-                # A delayed approval cannot displace a newer approved version.
-                newer = conn.execute("SELECT 1 FROM lesson_versions WHERE lesson_id=? AND version>? AND approved_at IS NOT NULL", (lesson["lesson_id"], lesson["version"])).fetchone()
-                if newer:
-                    raise LedgerError("version_conflict", "A newer lesson version has already been approved")
-                conn.execute("UPDATE lesson_versions SET state='retired',reason='Superseded by approved version' WHERE lesson_id=? AND state='active'", (lesson["lesson_id"],))
-                conn.execute("UPDATE lesson_versions SET state='active',approved_at=?,reason=? WHERE id=?", (now(), reason, version_id))
+                self._activate(conn, scope, version_id, reason)
             else:
                 conn.execute("UPDATE lesson_versions SET state=?,reason=? WHERE id=?", (target_state, reason, version_id))
             from .improvements import Improvements

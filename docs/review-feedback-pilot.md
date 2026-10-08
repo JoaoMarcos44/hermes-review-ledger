@@ -84,7 +84,8 @@ For example, this is valid `data` for `action="observation"`:
 
 Propose a conditional lesson only from eligible evidence, with `question`,
 `conditions`, `exclusions`, `verification`, and exact observation sources.
-Proposals remain candidates until the separate operator approval. Record exact
+In default manual mode, proposals remain candidates until separate operator approval.
+Explicit automatic mode follows the strict gates in [lesson automation](lesson-automation.md). Record exact
 version applicability before use, and usefulness/result afterward. A valid
 exception can motivate a narrower candidate; an architecture change can make
 an old lesson inapplicable without making its historical evidence false.
