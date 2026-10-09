@@ -545,6 +545,52 @@ class GitHubClientTests(unittest.TestCase):
         public_methods = [name for name in dir(GitHubClient) if not name.startswith("_") and callable(getattr(GitHubClient, name))]
         self.assertEqual(public_methods, ["fetch_pr_snapshot", "fetch_snapshot"])
 
+    def test_numeric_repository_id_link_pagination(self):
+        numeric_base = "https://api.github.com/repositories/123456/pulls/42/files?per_page=100&page="
+        first = [file_entry(f"src/{n}.py") for n in range(100)]
+        last = [file_entry("src/100.py")]
+        meta = metadata(101)
+        page1 = response(first, url=FILES_URL + "1", headers={
+            "Link": f'<{numeric_base}2>; rel="next", <{numeric_base}2>; rel="last"'
+        })
+        page2 = response(last, url=FILES_URL + "2", headers={
+            "Link": f'<{numeric_base}1>; rel="prev", <{numeric_base}1>; rel="first", <{numeric_base}2>; rel="last"'
+        })
+        client = self.client([response(meta), page1, page2, response(meta)])
+        snapshot = self.fetch(client)
+        self.assertEqual(len(snapshot.files), 101)
+        self.assertTrue(snapshot.files_complete)
+        self.assertEqual(self.transport.calls[2]["url"], FILES_URL + "2")
+        self.assertEqual(self.transport.calls[-1]["url"], PR_URL)
+        self.assertTrue(all(call["url"].startswith("https://api.github.com/repos/Example/project/") for call in self.transport.calls))
+
+    def test_numeric_repository_id_link_rejects_foreign_and_malformed(self):
+        bad_links = [
+            "https://api.github.com/repositories/999999/pulls/42/files?per_page=100&page=2",
+            "https://api.github.com/repositories/123456/pulls/43/files?per_page=100&page=2",
+            "https://api.github.com/repositories/123456/pulls/42/comments?per_page=100&page=2",
+            "https://api.github.com.evil.example/repositories/123456/pulls/42/files?per_page=100&page=2",
+            "http://api.github.com/repositories/123456/pulls/42/files?per_page=100&page=2",
+            "https://api.github.com:443/repositories/123456/pulls/42/files?per_page=100&page=2",
+            "https://api.github.com/repositories/123456/pulls/42/files?per_page=100&page=2&token=bad",
+            "https://api.github.com/repositories/123456/pulls/42/files?per_page=100&page=%32",
+            "https://api.github.com/repositories/123456/pulls/42/files?per_page=100&page=2#fragment",
+        ]
+        for link in bad_links:
+            with self.subTest(link=link):
+                client = self.client([response(metadata(2)), files_response([file_entry()], headers={"Link": f'<{link}>; rel="next"'})])
+                self.assert_error("untrusted_url", client)
+                self.assertEqual(len(self.transport.calls), 2)
+                self.assertTrue(all(call["url"].startswith("https://api.github.com/repos/Example/project/") for call in self.transport.calls))
+        with self.subTest(link="malformed_relation"):
+            client = self.client([response(metadata(2)), files_response([file_entry()], headers={"Link": '<https://api.github.com/repositories/123456/pulls/42/files?per_page=100&page=2>; rel="bogus"'})])
+            self.assert_error("invalid_pagination", client)
+        with self.subTest(link="unused_bad_last"):
+            client = self.client([
+                response(metadata()), files_response([file_entry()], headers={"Link": '<https://api.github.com/repositories/999999/pulls/42/files?per_page=100&page=2>; rel="last"'}),
+            ])
+            self.assert_error("untrusted_url", client)
+
 
 if __name__ == "__main__":
     unittest.main()
