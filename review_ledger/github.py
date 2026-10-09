@@ -410,7 +410,8 @@ class GitHubClient:
             "total_files": _integer_field(payload, "changed_files"),
         }
 
-    def _next_page(self, headers: Mapping[str, str], path: str, current: int) -> int | None:
+    def _next_page(self, headers: Mapping[str, str], path: str, current: int,
+                   numeric_path: str | None = None) -> int | None:
         link = headers.get("link")
         if link is None:
             return None
@@ -421,7 +422,14 @@ class GitHubClient:
             match = re.fullmatch(r'\s*<([^<>]+)>\s*;\s*rel="(next|prev|first|last)"\s*', entry)
             if not match or match.group(2) in relations:
                 raise GitHubError("invalid_pagination", "GitHub returned malformed pagination links.")
-            relations[match.group(2)] = _strict_api_url(match.group(1), path, files=True)
+            url = match.group(1)
+            if numeric_path is not None:
+                try:
+                    relations[match.group(2)] = _strict_api_url(url, path, files=True)
+                except GitHubError:
+                    relations[match.group(2)] = _strict_api_url(url, numeric_path, files=True)
+            else:
+                relations[match.group(2)] = _strict_api_url(url, path, files=True)
         next_page = relations.get("next")
         if next_page is not None and next_page != current + 1:
             raise GitHubError("invalid_pagination", "GitHub pagination did not advance by exactly one page.")
@@ -498,7 +506,8 @@ class GitHubClient:
             payload, headers = self._request(files_path, token=token, page=page)
             if not isinstance(payload, list) or len(payload) > 100:
                 raise GitHubError("invalid_response", "GitHub files response must contain at most 100 entries.")
-            next_page = self._next_page(headers, files_path, page)
+            next_page = self._next_page(headers, files_path, page,
+                                        f"/repositories/{metadata['repository_id']}/pulls/{number}/files")
             if len(files) + len(payload) > metadata["total_files"]:
                 raise GitHubError("inconsistent_snapshot", "GitHub file count exceeds its pull-request metadata.")
             if not payload and len(files) < metadata["total_files"]:
