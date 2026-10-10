@@ -14,6 +14,8 @@ A small native Hermes plugin for persistent, profile-local GitHub PR investigati
 
 Hermes investigates code using its authorized host tools. Review Ledger records state and agent-reported evidence, coordinates a single writer, and helps retrieve relevant questions. It does not execute repository commands, independently observe tests, train models, or establish that a reviewer became better.
 
+For apparent review loops, use the [progress-triage runbook](docs/review-progress-triage.md): compare complete results and changed questions before treating repeated red probes as non-progress, separate context-pilot infrastructure failures, and preserve run ownership. The runbook is documentation, not an automatic loop detector or a runtime fix.
+
 ## Verified environment and public contract
 
 The implementation was tested against the public NousResearch/hermes-agent source at commit `0dbaf33f67acf1f6d8e8e6c6efe8042ef8db98c4`, runtime identity `git.0dbaf33`. Its `pyproject.toml` uses the placeholder version `0.0.0`; this project does not invent a minimum Hermes release number.
