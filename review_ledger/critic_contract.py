@@ -49,7 +49,9 @@ RESPONSE_SCHEMA = _object({
 
 def load_prompt() -> str:
     """Read the packaged original English prompt, without a host dependency."""
-    return files("review_ledger").joinpath("prompts", "critic_v1.md").read_text(encoding="utf-8")
+    # Anchor on this module's package so a namespaced native plugin copy reads its
+    # own prompt, never an ambient top-level review_ledger package.
+    return files(__package__).joinpath("prompts", "critic_v1.md").read_text(encoding="utf-8")
 
 
 def _invalid(message: str) -> None:

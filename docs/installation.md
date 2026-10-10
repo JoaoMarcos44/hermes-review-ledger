@@ -188,3 +188,14 @@ A wheel rebuild uses one validated current-source snapshot for both its normal
 Python package and its bundled native installer payload, rather than relying
 on source mtimes. The build output must not alias the source package. This
 prevents stale modules from surviving same-version or preserved-mtime rebuilds.
+
+## Resource resolution under the native loader
+
+Runtime modules that read their packaged resources (the review procedure in
+`review_ledger/resources/protocol.md` and the critic prompt in
+`review_ledger/prompts/critic_v1.md`) resolve them through their own package
+(`importlib.resources.files(__package__)`), never a bare top-level name. The
+native directory-plugin loader imports this plugin below `hermes_plugins.<slug>`
+and adds a `__home_<digest>` suffix for any additional profile copy, so a bare
+`files("review_ledger")` lookup would fail in a fresh process or silently read a
+different copy's files. Keep resource reads package-relative.
