@@ -2,7 +2,7 @@
 from importlib.resources import files
 import hashlib
 
-VERSION = "3"
+VERSION = "4"
 
 def protocol():
     # Resolve against this module's own package, not a bare "review_ledger": the

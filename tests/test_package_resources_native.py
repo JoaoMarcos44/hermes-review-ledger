@@ -59,7 +59,7 @@ full = model_dispatch("ledger_context", {
     "action": "prepare", "query": "synthetic"
 }, "session-a")
 assert full["state"] == "ok", full
-assert full["protocol"]["version"] == "3", full
+assert full["protocol"]["version"] == "4", full
 assert full["protocol"]["content"] == source_protocol, full
 assert full["protocol"]["sha256"] == hashlib.sha256(source_protocol.encode("utf-8")).hexdigest(), full
 

@@ -120,6 +120,8 @@ def export(ledger: Ledger, repository: str, run_id: str, actor: Actor, *, format
                                       "Exports are bounded snapshots, not synchronization or import formats.",
                                       "Critic-generated opinions are not execution evidence; agreement does not confirm a finding and disagreement does not refute it.",
                                       "Current criticism reflects only Ledger known state, not live GitHub. Model independence is unknown."]}
+            from .workflow import WorkflowView
+            output["workflow"] = WorkflowView(ledger.store).summary(scope, run_id=run_id, limit=1, conn=conn)
             # Foreign-key references are retained even when their target is on another page.
             output["references"] = {"review_id": run["review_id"], "run_id": run_id,
                                     "skill_version": run["skill_version"], "skill_hash": run["skill_hash"]}
@@ -147,6 +149,16 @@ def markdown(data: dict) -> str:
             for selected in manifest["selections"]:
                 lines.append(f"- {selected['kind']} {selected['id']}: eligible now={selected['eligible_now']}; historical content digest {selected['sha256']}")
 
+    if data.get("workflow"):
+        workflow = data["workflow"]
+        lines.extend(["", "## Learning workflow (current recorded state)",
+                      f"Pending considered feedback in this run: {workflow['pending_use_count']}",
+                      f"Repository diagnoses/candidates: {workflow['pending_improvements_count']}",
+                      "Discovery cards are not loaded strategies or approval authority."])
+        for card in workflow["improvements"]:
+            lines.append("- " + _literal(json.dumps(card, ensure_ascii=False, sort_keys=True)))
+        if workflow["improvements_omitted"]:
+            lines.append(f"- More workflow cards: ledger_status workflow_offset={workflow['queue_next_offset']}")
     lines.extend(["", "## Original findings"])
     for finding in data["findings"]:
         lines.append("- " + _literal(json.dumps(finding, ensure_ascii=False, sort_keys=True)))

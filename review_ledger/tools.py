@@ -10,7 +10,7 @@ from pathlib import Path
 from . import __version__
 from .github import GitHubClient, GitHubError
 from .learning import Learning
-from .models import Actor, LedgerError, canonical, choice, fields, integer, strings, text
+from .models import Actor, LedgerError, canonical, choice, fields, integer, safe_error_hints, strings, text
 from .reports import export
 from .service import Ledger
 from .storage import Store
@@ -91,7 +91,7 @@ def handle(ctx, name: str, arguments: dict, **kwargs) -> str:
                     repository, args["run_id"], actor,
                     limit=args.get("limit", 10), offset=args.get("offset", 0),
                     history_offset=args.get("history_offset", 0),
-                    max_chars=args.get("max_chars", 24_000),
+                    max_chars=args.get("max_chars", 24_000), workflow_offset=args.get("workflow_offset", 0),
                 )
         elif name == "ledger_run":
             result = ledger.run_action(
@@ -177,7 +177,11 @@ def handle(ctx, name: str, arguments: dict, **kwargs) -> str:
                 pass
         return rendered
     except (LedgerError, GitHubError) as exc:
-        return json.dumps({"state": "error", "error": {"code": exc.code, "message": str(exc)}}, separators=(",", ":"))
+        error = {"code": exc.code, "message": str(exc)}
+        hints = safe_error_hints(getattr(exc, "hints", None))
+        if hints:
+            error["hints"] = hints
+        return json.dumps({"state": "error", "error": error}, separators=(",", ":"))
     except (TypeError, ValueError, KeyError):
         return json.dumps({"state": "error", "error": {"code": "invalid_input", "message": "Invalid or missing operation fields"}}, separators=(",", ":"))
     except Exception:
@@ -306,8 +310,9 @@ SCHEMAS = {
     "ledger_status": schema("ledger_status", "Read run evidence or PR history within a serialized character budget. Oversized items return explicit detail references. Select exactly one run_id or pull_number. With run_id and detail_collection, retrieve complete record JSON in bounded pages and verify the assembled digest; offset is then a character position, and limit/history_offset are forbidden. No session takeover.",
                             {**BASE, "pull_number": I, "limit": I, "offset": I, "history_offset": I,
                              "max_chars": {"type": "integer", "minimum": 4000, "maximum": 64000},
-                             "detail_collection": {"type": "string", "enum": ["run", "observation", "assessment", "finding"]},
-                             "detail_id": {"type": "string", "description": "Required for observation, assessment or finding detail; omit for run detail"}}, ["repository"]),
+                             "detail_collection": {"type": "string", "enum": ["run", "observation", "assessment", "finding", "workflow"]},
+                             "workflow_offset": {"type": "integer", "minimum": 0, "maximum": 1000000},
+                             "detail_id": {"type": "string", "description": "Required for observation, assessment, finding or workflow improvement detail; omit for run detail"}}, ["repository"]),
     "ledger_run": schema("ledger_run", "Acquire an unowned run or release, pause, complete the current owned generation. Never transfer another session's ownership.",
                          {**WRITE, "action": {"type": "string", "enum": ["acquire", "release", "pause", "complete"]}, "note": S}, [*WRITE, "action"]),
     "ledger_record": schema("ledger_record", "Record agent-reported evidence, propose a finding, assess it for this snapshot, or record/invalidate frozen external references as untrusted context. Read the skill for action-specific data fields.",

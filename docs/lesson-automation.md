@@ -1,7 +1,7 @@
 # Ledger V1: configurable lesson automation
 
-Ledger remains package 1.0.2 with SQLite schema 5 in this integrated V1 build.
-The bundled procedure revision is 3 to record the proactive lesson-creation
+Ledger remains package 1.0.3 with SQLite schema 5 in this integrated V1 build.
+The bundled procedure revision is 4, retaining the proactive lesson-creation
 contract; this is not a Ledger V2 product. The default activation mode is
 `manual`, including profiles upgrading without a setting. No lesson is created
 retroactively. No background worker or extra model call is started: the bundled

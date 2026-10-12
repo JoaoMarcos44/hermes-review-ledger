@@ -21,7 +21,7 @@ def test_host_neutral_protocol_requires_proactive_conditional_lesson_creation():
     protocol_path = Path(__file__).resolve().parents[1] / "review_ledger" / "resources" / "protocol.md"
     protocol = protocol_path.read_text(encoding="utf-8")
     normalized = " ".join(protocol.split()).casefold()
-    assert protocol.startswith("# Review Ledger procedure 3\n")
+    assert protocol.startswith("# Review Ledger procedure 4\n")
     assert "proactively assess the current run for a reusable conditional lesson" in normalized
     assert "only when the owned investigation is ready to complete" in normalized
     assert "no extra model call or background worker" in normalized

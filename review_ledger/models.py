@@ -10,8 +10,9 @@ from typing import Any
 
 
 class LedgerError(Exception):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, *, hints: dict | None = None):
         self.code = code
+        self.hints = safe_error_hints(hints)
         super().__init__(message)
 
 
@@ -34,6 +35,57 @@ OUTCOMES = {"inspection", "behavior_failure", "behavior_passed", "hypothesis_ref
 ELIGIBLE_OUTCOMES = {"inspection", "behavior_failure", "behavior_passed", "hypothesis_refuted"}
 SHA = re.compile(r"^[0-9a-f]{40}$")
 IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*_[0-9a-f]{32}$")
+
+
+def safe_error_hints(value: Any) -> dict | None:
+    """Only bounded identifiers, counters and fixed action/field names reach errors."""
+    if not isinstance(value, dict):
+        return None
+    result = {}
+    count = value.get("pending_use_count")
+    if type(count) is int and 0 <= count <= 2**53 - 1:
+        result["pending_use_count"] = count
+    ids = value.get("pending_use_ids")
+    if isinstance(ids, list) and len(ids) <= 20 and all(
+            isinstance(i, str) and i.startswith("use_") and IDENTIFIER.fullmatch(i) for i in ids):
+        result["pending_use_ids"] = ids
+    omitted = value.get("pending_use_ids_omitted")
+    if type(omitted) is bool:
+        result["pending_use_ids_omitted"] = omitted
+    invalid = value.get("invalid_sources")
+    if isinstance(invalid, list) and len(invalid) <= 20:
+        rows = []
+        for row in invalid:
+            if not isinstance(row, dict):
+                continue
+            ident, required = row.get("observation_id"), row.get("required_fields")
+            if (isinstance(ident, str) and ident.startswith("observation_")
+                    and IDENTIFIER.fullmatch(ident) and isinstance(required, list)
+                    and len(required) <= 4 and all(isinstance(f, str) and f in {"kind", "outcome", "details", "environment"} for f in required)):
+                rows.append({"observation_id": ident, "required_fields": required})
+        result["invalid_sources"] = rows
+    action = value.get("next_action")
+    if isinstance(action, str) and action in {"record_lesson_result_or_pause", "separate_inspection_from_behavior_support"}:
+        result["next_action"] = action
+    return result or None
+
+
+def behavior_report_hints(observations) -> dict:
+    """Diagnose report shape, never infer execution or expose reported prose."""
+    invalid = []
+    for observation in observations:
+        required = []
+        if observation["kind"] != "test":
+            required.append("kind")
+        if observation["outcome"] == "inspection":
+            required.append("outcome")
+        if not (observation["details"] or "").strip():
+            required.append("details")
+        if not (observation["environment"] or "").strip():
+            required.append("environment")
+        if required:
+            invalid.append({"observation_id": observation["id"], "required_fields": required})
+    return {"invalid_sources": invalid, "next_action": "separate_inspection_from_behavior_support"}
 
 
 @dataclass(frozen=True)

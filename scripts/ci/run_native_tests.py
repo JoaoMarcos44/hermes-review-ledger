@@ -32,6 +32,8 @@ REQUIRED_INTEGRATION_TESTS = {
     "test_real_host_profile_state_property_is_dynamic",
     "test_real_model_dispatch_binds_session_and_blocks_model_owner_fields",
     "test_real_profiles_keep_same_repository_separate",
+    "test_real_tokens_cli_uses_read_only_host_counters",
+    "test_real_feedback_preflight_returns_safe_actionable_hints",
     "test_real_cli_transfer_invalidates_previous_owner_generation",
     "test_real_cli_approval_and_revocation_are_separate_from_model_tools",
     "test_real_tools_discover_historical_runs_without_cached_ids",

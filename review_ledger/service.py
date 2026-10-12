@@ -5,7 +5,7 @@ import hashlib
 import json
 
 from .models import (Actor, Assessment, ELIGIBLE_OUTCOMES, LedgerError, OUTCOMES,
-                     Scope, canonical, choice, digest, fields, integer, sha, strings, text)
+                     Scope, behavior_report_hints, canonical, choice, digest, fields, integer, sha, strings, text)
 from .storage import Store, new_id, now
 from .references import References, REFERENCE_FIELDS, REQUIRED_REFERENCE_FIELDS
 
@@ -241,11 +241,12 @@ class Ledger:
         return result
 
     def status(self, repository: str, run_id: str, actor: Actor, *, limit=10, offset=0,
-               history_offset=0, max_chars=24_000) -> dict:
+               history_offset=0, max_chars=24_000, workflow_offset=0) -> dict:
         scope = self.scope(repository)
         integer(limit, "limit", 1, 25)
         integer(offset, "offset", 0, 1_000_000)
         integer(history_offset, "history_offset", 0, 1_000_000)
+        integer(workflow_offset, "workflow_offset", 0, 1_000_000)
         integer(max_chars, "max_chars", 4000, 64_000)
         with self.store.connect() as conn:
             conn.execute("BEGIN")
@@ -261,9 +262,13 @@ class Ledger:
                 self._assessment_sources(conn, scope, assessment)
             history = self._run_references(conn, scope, run["review_id"], limit=limit,
                                            offset=history_offset, exclude_id=run_id)
+            # Compact workflow summary for this repository
+            from .workflow import WorkflowView
+            workflow_summary = WorkflowView(self.store).summary(scope, run_id=run_id, limit=1, offset=workflow_offset, conn=conn)
             output = {"state": "ok", "run": self._run_view(run, actor), "observations": observations[:limit],
                     "assessments": assessments[:limit], "findings": findings[:limit], "historical_runs": history["total_runs"],
                     "related_runs": history,
+                    "workflow": workflow_summary,
                     "omitted": {"observations": len(observations) > limit, "assessments": len(assessments) > limit, "findings": len(findings) > limit},
                     "next_offset": offset + limit if max(len(observations), len(assessments), len(findings)) > limit else None,
                     "max_chars": max_chars,
@@ -318,12 +323,15 @@ class Ledger:
                       detail_id: str | None = None, offset=0, max_chars=24_000) -> dict:
         """Return complete, scoped record JSON in pages whose whole envelope fits."""
         scope = self.scope(repository)
-        choice(detail_collection, "detail_collection", {"run", "observation", "assessment", "finding"})
+        choice(detail_collection, "detail_collection", {"run", "observation", "assessment", "finding", "workflow"})
         integer(offset, "offset", 0, 1_000_000)
         integer(max_chars, "max_chars", 4000, 64_000)
         if detail_collection == "run":
             if detail_id is not None:
                 raise LedgerError("invalid_input", "Run detail uses run_id without detail_id")
+        elif detail_collection == "workflow":
+            if detail_id is None:
+                raise LedgerError("invalid_input", "Workflow detail requires an improvement_id")
         else:
             text(detail_id, "detail_id", 64)
         with self.store.connect() as conn:
@@ -331,6 +339,9 @@ class Ledger:
             run = self.store.run(conn, scope, run_id)
             if detail_collection == "run":
                 item = self._run_view(run, actor)
+            elif detail_collection == "workflow":
+                from .workflow import WorkflowView
+                item = WorkflowView(self.store).detail(scope, detail_id, conn=conn)
             elif detail_collection == "observation":
                 row = conn.execute("SELECT * FROM observations WHERE repository_id=? AND run_id=? AND id=?",
                                    (scope.repository_id, run_id, detail_id)).fetchone()
@@ -400,6 +411,25 @@ class Ledger:
                     conn.execute("UPDATE runs SET owner_session=?,generation=generation+1,status='active',updated_at=?,note=? WHERE id=?", (actor.session_id, now(), note, run_id))
             else:
                 self.store.owner(conn, scope, run_id, actor, generation)
+                if action == "complete":
+                    # Preflight: block completion when applicable/uncertain uses lack results.
+                    # not_applicable uses have an explicit disposition and do not block.
+                    pending = conn.execute("""
+                        SELECT COUNT(*) FROM lesson_uses
+                        WHERE repository_id=? AND run_id=?
+                        AND applicability IN ('applicable', 'uncertain')
+                        AND usefulness IS NULL
+                    """, (scope.repository_id, run_id)).fetchone()[0]
+                    if pending > 0:
+                        ids = [row[0] for row in conn.execute(
+                            "SELECT id FROM lesson_uses WHERE repository_id=? AND run_id=? "
+                            "AND applicability IN ('applicable','uncertain') AND usefulness IS NULL ORDER BY id LIMIT 20",
+                            (scope.repository_id, run_id))]
+                        raise LedgerError("pending_lesson_feedback",
+                                         "Cannot complete with pending applicable or uncertain lesson feedback",
+                                         hints={"pending_use_count": pending, "pending_use_ids": ids,
+                                                "pending_use_ids_omitted": pending > len(ids),
+                                                "next_action": "record_lesson_result_or_pause"})
                 status = {"pause": "paused", "complete": "completed", "release": run["status"]}[action]
                 conn.execute("UPDATE runs SET owner_session=NULL,generation=generation+1,status=?,updated_at=?,note=? WHERE id=?", (status, now(), note, run_id))
             self.store.audit(conn, scope, run_id, action, actor.session_id, {"generation": generation, "note": note})
@@ -512,8 +542,11 @@ class Ledger:
         if state in ("supported", "refuted"):
             if not observations or basis == "none" or any(o["outcome"] not in ELIGIBLE_OUTCOMES for o in observations):
                 raise LedgerError("ineligible_evidence", "Infrastructure, timeout, skipped, incomplete or absent reports cannot support/refute a finding")
-            if basis == "behavior" and any(o["outcome"] == "inspection" or o["kind"] != "test" or not (o["environment"] or "").strip() or not o["details"].strip() for o in observations):
-                raise LedgerError("incomplete_behavior_report", "Behavior assessment needs test details and environment; inspection remains inspection")
+            if basis == "behavior":
+                hints = behavior_report_hints(observations)
+                if hints["invalid_sources"]:
+                    raise LedgerError("incomplete_behavior_report", "Behavior assessment needs test details and environment; inspection remains inspection",
+                                      hints=hints)
         resolution = data.get("resolution")
         if resolution is not None:
             fields(resolution, {"original_observation_id", "verification_observation_id", "original_behavior", "limitations"},
