@@ -229,10 +229,87 @@ feedback, schema migration, or marginal token/cost-savings claim is introduced.
 
 The live runtime's missing PyYAML was repaired in its actual bootstrapped
 Python 3.14 dependency generation, and the SQLite backup reported
-`restore_verified: true`. The operator explicitly selected **deferred live-code
-replacement while sessions are active**. The existing live plugin remains
-**1.0.2**; the verified update is an artifact, not a hot-reload claim. Historical
-runs/lessons, configuration, credentials and other profiles were not rewritten.
+`restore_verified: true`. At the original publication, the operator selected
+**deferred live-code replacement while sessions were active** and live code
+remained **1.0.2**. The subsequent explicit local-upgrade request superseded that
+deferral; the review-repair/rollout section below records the later state.
+Historical runs/lessons, credentials and other profiles were not rewritten.
+
+## Review-blocker repairs and final source verification
+
+The six P2 reports against reviewed head
+`1b27b17f5923ba7b65edd975dae826de719b6123` were reproduced independently through
+public Ledger/Learning admission paths and a real isolated synthetic Store.
+They are repaired in the same canonical candidate, without copying another
+contributor's patch or creating a parallel PR.
+
+| Reported contract | Mechanism and repair |
+|---|---|
+| Correlation snapshot | Autocommit allowed requested-run selection and the repository membership map to observe different states. Capture bounded Ledger inputs under one explicit read transaction, then release it before any host callback. |
+| Worker attribution | Descendants were selected but their inherited run IDs were missing. Preserve direct plus ancestor memberships from the captured map, with one bounded host enumeration. |
+| Shared-session scope | The repository map disclosed unrelated shared sessions. Emit shared disclosures only for actually selected sessions. |
+| Auxiliary total schema | Missing/already-counted rows omitted derived keys. Keep `prompt_tokens` and `total_tokens` present with null values, never invented zeros. |
+| Historical targets | Eligibility refusal also discarded exact target history. Load scoped historical metadata independently, preserving conditions/exclusions/verification/provenance while setting `actionable_now=false`. |
+| Monetary coverage | Session-row cost silently excluded auxiliary estimates. Explicitly disclose that exclusion; do not invent a combined monetary total. |
+
+Rejected alternatives include retrying an autocommit read (not a snapshot),
+holding a read lock over host callbacks (blocks durable writers), process-local
+locks (not cross-connection coordination), hiding shared warnings, forcing
+missing counters to zero, and bypassing eligibility or reactivating history.
+The Ledger snapshot does not claim atomicity with the separate host counter
+source. Worker inheritance uses the captured Ledger view and separately observed
+host parent metadata, not a live revalidation or marginal attribution.
+
+The parent compared each of the six contracts separately on original and fixed
+production modules: all six violate their contract on the original source and
+all six satisfy it on the fixed source. This differential harness is supplemental
+component evidence, not a provider E2E test or an additional pytest total.
+
+- New shipped regressions: two parametrized token functions (six cases) and one
+  parametrized historical-detail function (four cases). Original token source:
+  six failed; fixed source: six passed. Historical detail original source:
+  three failed/one active control passed; fixed source: four passed.
+- Snapshot tests use public admission on a real independent SQLite connection
+  in a writer thread, started after the first correlation read. The writer must
+  progress during the first host callback; a later admission must remain absent
+  from the captured report. Run/session/repository modes and reader failure
+  cleanup are covered. The 1s timed join is below the Store's 2s busy timeout;
+  this is bounded same-process evidence, not an OS-process concurrency proof.
+- Parent integrated focused run: **106 passed in 28.07s**, exit 0. Exact files:
+  `test_token_report_fixes`, `test_workflow_historical_detail`,
+  `test_learning_workflow`, `test_workflow_integration`, `test_token_report`,
+  `test_token_report_resources`, `test_token_report_prefixes`,
+  `test_token_report_limits`, `test_token_report_adversarial`,
+  `test_token_formatter_states`, `test_tokens_cli`, `test_feature_payload`.
+- Final canonical native matrix: **1286 collected, 1284 passed, 2 failed,
+  0 errors, 0 skipped in 460.85s**, exit 1. All **24 real-Hermes required
+  cases** passed. The same two Windows symlink fixture setups remain red;
+  unchanged baseline control: **2 failed in 0.30s**, before product assertions.
+  Their test and production paths match baseline byte-for-byte. This is not a
+  full-suite green result and is not remote CI evidence.
+- Verification interpreter: Python 3.14.7, pytest 8.4.2, SQLite 3.53.1 on native
+  Windows; clean Hermes integration pin remains
+  `0dbaf33f67acf1f6d8e8e6c6efe8042ef8db98c4`. The driver environment retains
+  older editable distribution metadata; the tested source root and installed
+  clean wheel payload, not that metadata label, establish candidate identity.
+- The four changed executable/test files were hash-frozen before the full run
+  and checked afterward. Subsequent evidence-document edits do not change
+  those verified bytes. The active worktree has no graph JSON; the earlier
+  isolated AST graph is orientation only.
+- Wheel/sdist built; a fresh wheel environment installed offline from the local
+  artifact and cached PyYAML, passed dependency checks and exact payload
+  comparison. The default-profile code-only upgrade was explicitly authorized,
+  preceded by a verified SQLite backup and intact previous-code archive, and
+  matched all **38 runtime payload files**. The installer did not change
+  configuration or touch data/other profiles. Existing processes may retain old
+  modules; this is not a forced hot-reload claim. The later explicit CLI setting
+  enables `usage_enabled`; all other configuration and model/provider settings
+  are preserved. Actual fresh-process plugin doctor/validation/list checks pass.
+  The normal launcher first had to prepare an already-pending source dependency
+  update; its initial 90s timeout is interrupted setup, not plugin success. The
+  bounded retry completed. The inherited source-launcher-publication warning
+  remains separate from successful plugin checks. Fresh token-command and final
+  remote/merge receipts are recorded separately in the PR/operator handoff.
 
 ## Open items
 
@@ -240,4 +317,4 @@ runs/lessons, configuration, credentials and other profiles were not rewritten.
 - Remote checks and publication identity are recorded in the PR, not inferred locally.
 - Procedure 4 preserves the tested low-cap context/reference contracts.
 - Cross-platform native evidence is unavailable (Windows-only environment).
-- Live plugin upgrade is deliberately deferred until active sessions are closed.
+- Existing CLI/gateway processes must be restarted to use the new on-disk code consistently.

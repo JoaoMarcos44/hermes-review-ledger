@@ -167,12 +167,13 @@ class WorkflowView:
             "offset": offset,
             "limit": limit,
         }
-        # Validate and include eligibility under the same snapshot.
+        # Load the exact repository-scoped target independently of eligibility
+        # validation; history is readable context, never approval authority.
         try:
-            target = self.improvements._validate(conn, scope, row_dict, require_current_target=row_dict["status"] != "applied")
-            item["eligible_now"] = (Learning.eligible(conn, scope, row_dict["candidate_version_id"])
-                                    if row_dict["status"] == "applied" else row_dict["status"] != "rejected")
-            item["actionable_now"] = item["eligible_now"] and row_dict["status"] in ("review_needed", "proposed")
+            target = Learning.version(conn, scope, row_dict["target_version_id"])
+        except LedgerError:
+            target = None
+        if target is not None:
             item["target"] = {
                 "version_id": target["id"],
                 "question": target["question"],
@@ -185,9 +186,16 @@ class WorkflowView:
                 "symbols": target["symbols"],
                 "sources": target["sources"],
             }
+        # Validate and include eligibility under the same snapshot.
+        try:
+            self.improvements._validate(conn, scope, row_dict, require_current_target=row_dict["status"] != "applied")
+            item["eligible_now"] = (Learning.eligible(conn, scope, row_dict["candidate_version_id"])
+                                    if row_dict["status"] == "applied" else row_dict["status"] != "rejected")
+            item["actionable_now"] = item["eligible_now"] and row_dict["status"] in ("review_needed", "proposed")
         except LedgerError as exc:
             item["eligible_now"] = False
             item["ineligible_reason"] = exc.code
+            item["actionable_now"] = False
         # Include aggregate feedback summary.
         summary = conn.execute("""
             SELECT summary_json FROM improvement_aggregates WHERE repository_id=? AND version_id=?

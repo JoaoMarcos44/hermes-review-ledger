@@ -7,6 +7,7 @@ never replaced with $0.  Whole-session, non-marginal attribution is explicit.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import math
 from datetime import datetime, timezone
@@ -254,6 +255,16 @@ def _cost_view(metadata, session_id):
     }
 
 
+@dataclass
+class _Selection:
+    """One captured Ledger view: selected sessions, correlation, and run map."""
+
+    session_ids: set[str]
+    correlation: dict[str, list[str]]
+    run_session_map: dict[str, set[str]]
+    scope_kind: str
+
+
 # ── TokenReport ─────────────────────────────────────────────────────────────
 
 class TokenReport:
@@ -273,6 +284,9 @@ class TokenReport:
     def report(self, repository, run_id=None, session_id=None, include_workers=False):
         """Produce a truthful token report for a repository, run, or session.
 
+        All bounded Ledger reads are taken inside one explicit read snapshot
+        that is released before any host metadata or worker enumeration, so
+        selection and shared-membership disclosures share one captured view.
         No model-provided usage, no filesystem path arguments, no other
         profiles.  Returns body-free JSON-friendly data.
         """
@@ -281,11 +295,25 @@ class TokenReport:
         scope = self.ledger.scope(repository)
 
         with self.ledger.store.connect() as conn:
-            if run_id is not None:
-                return self._report_by_run(conn, scope, run_id, session_id, include_workers)
-            if session_id is not None:
-                return self._report_by_session(conn, scope, session_id, include_workers)
-            return self._report_by_repository(conn, scope, include_workers)
+            owns_snapshot = not conn.in_transaction
+            if owns_snapshot:
+                conn.execute("BEGIN")
+            try:
+                if run_id is not None:
+                    selection = self._select_run(conn, scope, run_id, session_id)
+                elif session_id is not None:
+                    selection = self._select_session(conn, scope, session_id)
+                else:
+                    selection = self._select_repository(conn, scope)
+            finally:
+                # Release the read snapshot BEFORE any host read so durable
+                # writers are never blocked by this report.
+                if owns_snapshot:
+                    conn.rollback()
+
+        if include_workers:
+            selection = self._expand_workers_selection(selection)
+        return self._build_report(scope, selection, include_workers=include_workers)
 
     # ── correlation helpers ────────────────────────────────────────────────
 
@@ -334,28 +362,16 @@ class TokenReport:
 
         return run, session_ids, correlation
 
-    def _report_by_run(self, conn, scope, run_id, session_id, include_workers):
-        run, session_ids, correlation = self._correlate_run_sessions(conn, scope, run_id)
-
+    def _select_run(self, conn, scope, run_id, session_id):
+        """Select one run's correlated sessions from the current snapshot."""
+        _, session_ids, correlation = self._correlate_run_sessions(conn, scope, run_id)
         if session_id is not None:
             if session_id not in session_ids:
                 raise LedgerError("scope_not_found", "Session is not correlated to this run")
             session_ids = {session_id}
-
-        # Expand to include workers if requested
-        worker_ids = []
-        if include_workers:
-            session_ids, worker_ids = self._expand_workers(session_ids)
-            for wid in worker_ids:
-                correlation.setdefault(wid, []).append("worker")
-
-        # Compute full repo run_session_map for shared-session detection
-        run_session_map = self._repo_run_session_map(conn, scope)
-
-        return self._build_report(
-            conn, scope, session_ids, correlation,
-            run_ids=[run_id], include_workers=include_workers,
-            run_session_map=run_session_map, scope_kind="session" if session_id is not None else "run",
+        return _Selection(
+            session_ids, correlation, self._repo_run_session_map(conn, scope),
+            "session" if session_id is not None else "run",
         )
 
     def _repo_run_session_map(self, conn, scope):
@@ -372,27 +388,30 @@ class TokenReport:
             run_session_map[run["id"]] = sids
         return run_session_map
 
-    def _expand_workers(self, session_ids):
-        """Expand session IDs to include worker/subagent descendants.
+    def _expand_workers_selection(self, selection):
+        """Add worker descendants and propagate direct + ancestor memberships.
 
-        Uses reader.list_sessions_metadata if available.  Returns the
-        expanded set and a list of worker session IDs added.
+        Uses ONE bounded host enumeration (``list_sessions_metadata``) plus the
+        already captured run/session map; it performs no further Ledger reads.
+        A worker that directly owns a run keeps that membership and also
+        inherits every membership of its ancestors.
         """
         method = getattr(self.reader, "list_sessions_metadata", None)
         if not callable(method):
             raise LedgerError("host_usage_unavailable", "This host reader cannot enumerate requested descendants")
         all_sessions = method()
 
-        # Build parent → children map
         children_of: dict[str, list[str]] = {}
-        for s in all_sessions:
-            parent = s.get("parent_session_id")
+        parent_of: dict[str, str] = {}
+        for entry in all_sessions:
+            parent = entry.get("parent_session_id")
             if parent:
-                children_of.setdefault(parent, []).append(s["id"])
+                parent_of[entry["id"]] = parent
+                children_of.setdefault(parent, []).append(entry["id"])
 
-        # BFS from in-scope sessions to find all descendants
-        expanded = set(session_ids)
-        queue = list(session_ids)
+        # BFS from in-scope sessions to find all descendants (each visited once).
+        expanded = set(selection.session_ids)
+        queue = list(selection.session_ids)
         while queue:
             current = queue.pop(0)
             for child_id in children_of.get(current, []):
@@ -400,11 +419,34 @@ class TokenReport:
                     expanded.add(child_id)
                     queue.append(child_id)
 
-        workers = expanded - session_ids
-        return expanded, sorted(workers)
+        membership_of: dict[str, set[str]] = {}
+        for run_id, session_ids in selection.run_session_map.items():
+            for session_id in session_ids:
+                membership_of.setdefault(session_id, set()).add(run_id)
 
-    def _report_by_session(self, conn, scope, session_id, include_workers):
-        """Find runs in this repo correlated to this session; reject if none."""
+        workers = expanded - selection.session_ids
+        selection.session_ids = expanded
+        for session_id in sorted(expanded):
+            if session_id in workers:
+                selection.correlation.setdefault(session_id, []).append("worker")
+            # A worker keeps its direct membership and inherits every
+            # membership of its ancestors, so a child owning another run
+            # retains both.  The walk is bounded by the visited set.
+            inherited: set[str] = set()
+            seen: set[str] = set()
+            ancestor = parent_of.get(session_id)
+            while ancestor is not None and ancestor not in seen:
+                seen.add(ancestor)
+                inherited |= membership_of.get(ancestor, set())
+                ancestor = parent_of.get(ancestor)
+            if inherited:
+                selection.correlation.setdefault(session_id, []).append("inherited")
+                for run_id in inherited:
+                    selection.run_session_map.setdefault(run_id, set()).add(session_id)
+        return selection
+
+    def _select_session(self, conn, scope, session_id):
+        """Find runs in this repository correlated to this session."""
         runs = conn.execute(
             "SELECT id, owner_session FROM runs WHERE repository_id=? ORDER BY id LIMIT ?",
             (scope.repository_id, MAX_RUNS + 1),
@@ -420,20 +462,10 @@ class TokenReport:
                 correlation.setdefault(session_id, []).extend(reasons[session_id])
         if not correlated_run_ids:
             raise LedgerError("scope_not_found", "Session is not correlated to any run in this repository")
-        session_ids = {session_id}
-        if include_workers:
-            session_ids, workers = self._expand_workers(session_ids)
-            for wid in workers:
-                correlation[wid] = ["worker"]
-        run_session_map = self._repo_run_session_map(conn, scope)
-        return self._build_report(
-            conn, scope, session_ids, correlation,
-            run_ids=correlated_run_ids, include_workers=include_workers,
-            run_session_map=run_session_map, scope_kind="session",
-        )
+        return _Selection({session_id}, correlation, self._repo_run_session_map(conn, scope), "session")
 
-    def _report_by_repository(self, conn, scope, include_workers):
-        """Correlate ALL runs in this repo."""
+    def _select_repository(self, conn, scope):
+        """Correlate every run in this repository from the current snapshot."""
         runs = conn.execute(
             "SELECT id FROM runs WHERE repository_id=? ORDER BY id LIMIT ?",
             (scope.repository_id, MAX_RUNS + 1),
@@ -444,26 +476,13 @@ class TokenReport:
         all_session_ids: set[str] = set()
         correlation: dict[str, list[str]] = {}
         run_session_map: dict[str, set[str]] = {}
-
         for run in runs:
-            run_id = run["id"]
-            _, session_ids, corr = self._correlate_run_sessions(conn, scope, run_id)
-            run_session_map[run_id] = session_ids
+            _, session_ids, corr = self._correlate_run_sessions(conn, scope, run["id"])
+            run_session_map[run["id"]] = session_ids
             all_session_ids |= session_ids
             for sid, basis in corr.items():
                 correlation.setdefault(sid, []).extend(basis)
-
-        # Expand to include workers if requested
-        if include_workers:
-            all_session_ids, worker_ids = self._expand_workers(all_session_ids)
-            for wid in worker_ids:
-                correlation.setdefault(wid, []).append("worker")
-
-        return self._build_report(
-            conn, scope, all_session_ids, correlation,
-            run_ids=[r["id"] for r in runs], include_workers=include_workers,
-            run_session_map=run_session_map, scope_kind="repository",
-        )
+        return _Selection(all_session_ids, correlation, run_session_map, "repository")
 
     # ── report builder ────────────────────────────────────────────────────
 
@@ -489,23 +508,23 @@ class TokenReport:
                            for sid, value in scopes.items()}
         return representatives, scopes
 
-    def _build_report(self, conn, scope, session_ids, correlation, run_ids,
-                      include_workers, run_session_map=None, scope_kind="run"):
-        """Build the final report from correlated session IDs."""
+    def _build_report(self, scope, selection, include_workers):
+        """Build the final report from the captured selection (host reads only)."""
+        session_ids = selection.session_ids
+        correlation = selection.correlation
+        run_session_map = selection.run_session_map
+        scope_kind = selection.scope_kind
         if len(session_ids) > MAX_SESSIONS:
             raise LedgerError("resource_limit", "Selected sessions exceed the bounded session cap")
         sessions = []
         missing_ids = []
         shared_sessions = []
 
-        # Track which sessions are shared across multiple runs
-        if run_session_map:
-            session_run_count: dict[str, list[str]] = {}
-            for rid, sids in run_session_map.items():
-                for sid in sids:
-                    session_run_count.setdefault(sid, []).append(rid)
-        else:
-            session_run_count = {sid: list(run_ids) for sid in session_ids}
+        # Track which sessions are shared across multiple runs in this snapshot.
+        session_run_count: dict[str, list[str]] = {}
+        for rid, sids in run_session_map.items():
+            for sid in sids:
+                session_run_count.setdefault(sid, []).append(rid)
 
         metadata_by_session = {sid: self.reader.get_session(sid) for sid in sorted(session_ids)}
         auxiliary_representatives, auxiliary_scopes = self._auxiliary_plan(session_ids, metadata_by_session)
@@ -533,7 +552,7 @@ class TokenReport:
                     "main_coverage": "missing",
                     "auxiliary": {
                         "tasks": {},
-                        "totals": {f: None for f in _AUX_TOTAL_FIELDS},
+                        "totals": {f: None for f in (*_AUX_TOTAL_FIELDS, "prompt_tokens", "total_tokens")},
                         "coverage": "missing",
                     },
                     "cost": {"estimated_usd": None, "actual_usd": None, "status": "unknown"},
@@ -575,7 +594,8 @@ class TokenReport:
                 "main": main,
                 "auxiliary": {
                     "tasks": aux_tasks,
-                    "totals": aux_totals if aux_coverage != "already_counted" else {f: None for f in _AUX_TOTAL_FIELDS},
+                    "totals": aux_totals if aux_coverage != "already_counted"
+                    else {f: None for f in (*_AUX_TOTAL_FIELDS, "prompt_tokens", "total_tokens")},
                     "coverage": aux_coverage,
                     "scope_session_ids": sorted(auxiliary_scopes[sid]),
                     "counted_with_session": auxiliary_representatives[sid],
@@ -629,7 +649,8 @@ class TokenReport:
                 "total_tokens": aux_total,
             }
 
-        for sid, runs in session_run_count.items():
+        for sid in sorted(session_ids):
+            runs = session_run_count.get(sid, [])
             if len(runs) > 1:
                 shared_sessions.append({"session_id": sid, "run_ids": sorted(runs)})
 
@@ -654,6 +675,7 @@ class TokenReport:
             "limitations": [
                 "Whole-session totals may include other work from the same session.",
                 "Per-tool or precise per-run marginal tokens are unavailable.",
+                "Per-session cost is the session-row cost and excludes auxiliary estimates.",
             ] + (
                 ["Worker descendants are not included in this report."]
                 if not include_workers else []
