@@ -1,5 +1,5 @@
 name: review-ledger
-version: 1.0.2
+version: 1.0.3
 description: Profile-local review investigations and configurable audited lessons
 provides_tools:
   - ledger_open
@@ -11,6 +11,8 @@ provides_tools:
   - ledger_export
   - ledger_context
   - ledger_critic
+python_dependencies:
+  - "PyYAML>=6.0.2,<7"
 config_schema:
   authorized_repositories:
     type: list

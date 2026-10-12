@@ -411,6 +411,96 @@ assert len(list((HOME / "plugin-data").rglob("review-ledger.sqlite3"))) == 1
 """)
 
 
+def test_real_tokens_cli_uses_read_only_host_counters(hermes_source, tmp_path):
+    _runtime(hermes_source, tmp_path, """
+import hashlib
+from hermes_state import SessionDB
+install_fixture(HOME)
+manager, loaded = load_fixture()
+run = open_fixture(loaded)
+state_path = HOME / "state.db"
+db = SessionDB(state_path)
+try:
+    db.create_session("session-a", "cli", model="synthetic-model", system_prompt="synthetic-private-prompt")
+    db.update_token_counts("session-a", input_tokens=100, output_tokens=50,
+        cache_read_tokens=20, cache_write_tokens=10, reasoning_tokens=5, api_call_count=1)
+    db.record_auxiliary_usage("session-a", "compression", input_tokens=10, output_tokens=7)
+    db.end_session("session-a", "compression")
+    db.create_session("session-tip", "cli", parent_session_id="session-a", model="synthetic-model")
+    db.update_token_counts("session-tip", input_tokens=100, output_tokens=50,
+        cache_read_tokens=20, cache_write_tokens=10, reasoning_tokens=5, api_call_count=1)
+    db.record_auxiliary_usage("session-tip", "compression", input_tokens=30, output_tokens=7)
+finally:
+    db.close()
+from hermes_cli.main import _attach_plugin_cli_command
+parser = argparse.ArgumentParser(prog="hermes")
+subparsers = parser.add_subparsers(dest="command", required=True)
+for entry in manager._cli_commands.values():
+    _attach_plugin_cli_command(subparsers, entry)
+def invoke(argv):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = parser.parse_args(["review-ledger", *argv]).func(parser.parse_args(["review-ledger", *argv]))
+    return code, out.getvalue()
+code, output = invoke(["transfer", "Example/project", run["id"], "--generation", str(run["generation"]),
+    "--session", "session-tip", "--reason", "Synthetic host continuation", "--request-key", "token-transfer"])
+assert code == 0, output
+moved = json.loads(output)["run"]
+closed = model_dispatch("ledger_run", {"repository": "Example/project", "run_id": run["id"],
+    "generation": moved["generation"], "action": "complete", "request_key": "token-close"}, "session-tip")
+assert "error" not in closed, closed
+before = hashlib.sha256(state_path.read_bytes()).hexdigest()
+code, output = invoke(["tokens", "Example/project", "--run-id", run["id"], "--format", "json"])
+assert code == 0, output
+report = json.loads(output)
+assert report["scope"] == "run" and report["totals"]["session_count"] == 2
+assert report["totals"]["main"]["total_tokens"] == 2 * (100 + 20 + 10 + 50)
+assert report["totals"]["auxiliary"]["total_tokens"] == 10 + 7 + 30 + 7
+assert report["totals"]["auxiliary"]["api_call_count"] == 2
+assert report["coverage"] == "complete", report
+assert "synthetic-private-prompt" not in output
+assert hashlib.sha256(state_path.read_bytes()).hexdigest() == before
+code, human = invoke(["tokens", "Example/project", "--session-id", "session-tip"])
+assert code == 0 and "Scope: session" in human and "whole_session_non_marginal" in human, human
+""")
+
+
+def test_real_feedback_preflight_returns_safe_actionable_hints(hermes_source, tmp_path):
+    _runtime(hermes_source, tmp_path, """
+install_fixture(HOME)
+manager, loaded = load_fixture()
+run = open_fixture(loaded)
+base = {"repository": "Example/project", "run_id": run["id"], "generation": run["generation"]}
+obs = model_dispatch("ledger_record", {**base, "action": "observation", "request_key": "feedback-source",
+    "data": {"kind": "test", "outcome": "behavior_passed", "summary": "Synthetic passing report",
+    "details": "Synthetic local proof", "environment": "Isolated fixture", "limitations": "Agent-reported"}}, "session-a")
+proposal = model_dispatch("ledger_lesson", {**base, "action": "propose", "request_key": "feedback-proposal",
+    "data": {"question": "Should a retry be checked?", "conditions": ["Repeated operation"], "exclusions": [],
+    "verification": "Inspect exact operation", "sources": [{"observation_id": obs["observation_id"], "relation": "supports"}]}}, "session-a")
+plugin_tools = importlib.import_module(loaded.module.__name__ + ".review_ledger.tools")
+ctx = PluginContext(loaded.manifest, manager)
+ledger = plugin_tools.ledger_for_context(ctx)
+version = proposal["version_id"]
+ledger_scope = ledger.scope("Example/project")
+learning = importlib.import_module(loaded.module.__name__ + ".review_ledger.learning").Learning(ledger.store)
+learning.operator(ledger_scope, version, "approve", "Synthetic explicit operator approval", "feedback-approve")
+use = model_dispatch("ledger_lesson", {**base, "action": "use", "request_key": "feedback-use",
+    "data": {"version_id": version, "applicability": "uncertain", "explanation": "Considered"}}, "session-a")
+denied = model_dispatch("ledger_run", {**base, "action": "complete", "request_key": "feedback-close"}, "session-a")
+assert denied["error"]["code"] == "pending_lesson_feedback", denied
+assert use["use_id"] in denied["error"]["hints"]["pending_use_ids"], denied
+status = model_dispatch("ledger_status", {"repository": "Example/project", "run_id": run["id"]}, "session-a")
+assert status["workflow"]["pending_use_count"] == 1
+assert status["run"]["can_write"] is True
+result = model_dispatch("ledger_lesson", {**base, "action": "result", "request_key": "feedback-result",
+    "data": {"use_id": use["use_id"], "usefulness": "inconclusive", "behavioral_result": "not_tested",
+    "execution_block": "missing_evidence", "explanation": "Truthfully unresolved"}}, "session-a")
+assert "error" not in result, result
+complete = model_dispatch("ledger_run", {**base, "action": "complete", "request_key": "feedback-close"}, "session-a")
+assert "error" not in complete, complete
+""")
+
+
 def test_real_cli_transfer_invalidates_previous_owner_generation(hermes_source, tmp_path):
     _runtime(hermes_source, tmp_path, """
 install_fixture(HOME)
@@ -622,7 +712,7 @@ manager, loaded = load_fixture()
 run = open_fixture(loaded)
 context = model_dispatch("ledger_context", {"repository":"Example/project", "run_id":run["id"], "action":"prepare", "query":"retry"}, "session-a")
 assert context["state"] == "ok", context
-assert context["protocol"]["version"] == "3"
+assert context["protocol"]["version"] == "4"
 assert len(json.dumps(context, ensure_ascii=False, separators=(",",":"))) <= 12000
 resumed = model_dispatch("ledger_context", {"repository":"Example/project", "run_id":run["id"], "action":"resume", "manifest_id":context["manifest_id"]}, "session-b")
 assert resumed["state"] == "ok" and "unknown" in resumed["residency"], resumed

@@ -1,4 +1,4 @@
-# Hermes Review Ledger V1 (1.0.2)
+# Hermes Review Ledger V1 (1.0.3)
 
 <p align="center">
   <img src="docs/assets/ledger-pixel.gif" width="640" height="360" alt="Ledger, a green-haired, purple-suited pixel character, laughing and holding a playing card. Silent animation." />
@@ -43,11 +43,13 @@ Relevant public sources:
 
 Follow the [complete install and update guide](docs/installation.md), including
 clean virtual environments, offline dependencies, backups and rollback limits.
-V1 is package/plugin **1.0.2**. Earlier 0.x builds were private development
+V1 is package/plugin **1.0.3**. Earlier 0.x builds were private development
 iterations, not public releases; historical records retain their original labels.
 Version **1.0.1** was a bugfix patch within Ledger V1. Version **1.0.2** adds
 proactive conditional-lesson creation instructions to the bundled agent workflow.
-SQLite schema remains **5**; the immutable procedure advances to **3** for this
+Version **1.0.3** adds transactional feedback closeout, read-only diagnostic
+workflow discovery and operator token reports; see [workflow and tokens](docs/learning-workflow-and-tokens.md).
+SQLite schema remains **5**; the immutable procedure advances to **4** for this
 contract update. Product identity does not reset the schema or policy counters.
 
 Frozen review/comment references reuse existing findings and the Context Engine;
@@ -102,7 +104,7 @@ bundled skill together. If the console command is not on PATH, use
 `python -m review_ledger` with that virtual environment's interpreter.
 
 A locally built wheel can be installed with
-`python -m pip install /path/to/hermes_review_ledger-1.0.2-py3-none-any.whl`.
+`python -m pip install /path/to/hermes_review_ledger-1.0.3-py3-none-any.whl`.
 For fully offline installation, prepare the runtime dependency wheels first and
 use `--no-index --find-links /path/to/wheelhouse` (see the guide).
 `--no-deps` is only appropriate when the required PyYAML is already installed. Wheels and source distributions are
@@ -250,7 +252,7 @@ a self-improvement loop. The separate optional critic is described below.
 
 ### Optional claim critic
 
-Integrated version 1.0.2 includes one optional critic tool, `ledger_critic`, with `prepare`, `run`, `status` and
+The integrated build retains the optional critic tool introduced in 1.0.2, `ledger_critic`, with `prepare`, `run`, `status` and
 `assess` actions. The critic is disabled by default. Preparation and reading are
 local; only explicit execution reaches the optional provider boundary. The
 pinned Hermes host cannot publicly prove its complete effective egress/fallback

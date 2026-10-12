@@ -23,7 +23,12 @@ Use this skill when the user asks to investigate or resume a GitHub PR with a du
 24,000; range 4,000–64,000). A large record may be returned as a reference with
 `detail_required`, `detail_collection`, and its ID. Retrieve it with the same
 tool, repository and run using `detail_collection` (`run`, `observation`,
-`assessment`, or `finding`) and `detail_id`; omit `detail_id` for `run`.
+`assessment`, `finding`, or `workflow`) and `detail_id`; omit `detail_id` for `run`.
+Workflow detail uses an exact improvement ID; workflow cards are not loaded lessons.
+Regular status exposes at most one repository queue card; follow `workflow.queue_next_offset`
+as `workflow_offset` (row position, not the detail character offset). The queue can
+include prior runs. Pending-use counts stay scoped to the requested run. Inspect
+`eligible_now`; stale/revoked items are historical, never current strategies.
 Do not supply `limit` or `history_offset` in detail mode. Here `offset` is a
 character position in complete canonical JSON. Follow `next_offset`, concatenate
 all `content` fragments, require a matching `content_sha256` on every page, and
@@ -44,6 +49,11 @@ All tools require repository scope; run operations require `run_id`, except the 
 - `assessment`: data contains `finding_id`, `state` (`unverified`, `supported`, `refuted`, `inconclusive`, `not_applicable`), `basis` (`inspection`, `behavior`, `none`), `rationale`, `limitations`, and `observation_ids` from this exact run. Inspection support remains explicitly labeled inspection. Behavioral support/refutation requires reported test details and environment; the application does not independently observe execution.
 - A resolution is optional assessment data `resolution`: `original_observation_id`, `verification_observation_id`, `original_behavior`, `limitations`. It requires a current passing behavioral report addressing the original reported failure and a behavior-based `refuted` assessment. CI green, “fixed”, removed/weak/ignored tests, or absence of symptoms alone do not establish resolution.
 - `invalidate_observation`: `observation_id` and `reason`, for an observation owned by this run. An operator can invalidate historical sources. Dependent lessons are suspended and dependent current assessments need revalidation.
+
+An `incomplete_behavior_report` response may identify source IDs and missing
+shape fields in `error.hints.invalid_sources`. Keep inspection references separate
+from behavioral support. Correct report fields only from actual observed checks;
+never relabel copied/static evidence as executed tests to satisfy validation.
 
 The application assigns every observation `agent_reported`. Never represent schema validation as semantic verification. Missing revisions, environment and outcomes must remain missing, not guessed.
 
@@ -159,7 +169,11 @@ If no lesson meets the criteria, make no lesson call. This is a single check wit
 3. `ledger_recall` selects up to five eligible versions or compact `lesson_references` within this repository/profile, deterministically by Unicode-normalized tags, terms, and symbols, under a character budget. The configured cap cannot be raised by a tool request. References contain `version_id` and `required_context_chars`; they do not supply a usable partial strategy. Omitted lessons are not negative evidence. For search pagination, follow `next_result_offset` with the same query and candidate-window `offset` until null, then advance `next_offset` to another candidate window. Ranking is local to each bounded window; restart if operator changes affect the search.
    Retrieve a large reference with the same `ledger_recall` using `repository`, `run_id`, `version_id`, and `offset=0`, without search fields or `limit`. Detail `offset` is a character position in canonical lesson JSON. Follow each `next_offset`, concatenate all `content` fragments, require one matching `content_sha256`, and verify the SHA-256 of the assembled UTF-8 text before interpreting the strategy. Never apply incomplete conditions/exclusions. Restart if the digest changes. Every page rechecks eligibility; a revoked version is unavailable even if earlier pages were read. The existing local operator `inspect` command can inspect inactive history.
 4. Before relying on a recalled strategy, call `ledger_lesson(action="use")` with exact `version_id`, `applicability` (`applicable`, `not_applicable`, `uncertain`), and `explanation`. The plugin rechecks revocations and sources. Never substitute the latest version silently.
-5. Record the use's result with `action="result"`: `use_id`, `usefulness` (`useful`, `not_useful`, `inconclusive`), `behavioral_result` (`failure_observed`, `hypothesis_refuted`, `no_failure_observed`, `inconclusive`, `not_tested`), `execution_block` (`none`, `infrastructure`, `timeout`, `skipped`, `budget`, `missing_evidence`), and `explanation`.
+5. Complete requires a disposition for applicable and uncertain uses. On
+   `pending_lesson_feedback`, inspect safe `error.hints.pending_use_ids`, supply
+   truthful results or pause; rejection does not release ownership. Do not relabel
+   applicability or invent evidence to clear the gate.
+   Record the use's result with `action="result"`: `use_id`, `usefulness` (`useful`, `not_useful`, `inconclusive`), `behavioral_result` (`failure_observed`, `hypothesis_refuted`, `no_failure_observed`, `inconclusive`, `not_tested`), `execution_block` (`none`, `infrastructure`, `timeout`, `skipped`, `budget`, `missing_evidence`), and `explanation`.
 6. A useful refutation is useful investigation. A blocked environment is inconclusive. Do not invent an outcome for an unused lesson. Repeating the same PR is not independent evidence and there are no learned probabilities or automatic scoring updates.
 7. `action="revise"` uses the proposal fields plus `previous_version_id`; it creates a new candidate. The operator can restrict or suspend an exact version, then explicitly approve a narrowed candidate after re-evaluation. Histories and exact-version uses remain unchanged.
 

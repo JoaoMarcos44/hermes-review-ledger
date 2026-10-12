@@ -62,6 +62,12 @@ def configure_parser(parser):
     command = sub.add_parser("usage")
     command.add_argument("repository")
     command.add_argument("--run-id")
+    command = sub.add_parser("tokens", help="Read provider-reported tokens for Ledger-associated sessions; not marginal tool cost")
+    command.add_argument("repository")
+    command.add_argument("--run-id")
+    command.add_argument("--session-id")
+    command.add_argument("--include-workers", action="store_true", default=False)
+    command.add_argument("--format", choices=["human", "json"], default="human")
     for action in ("critic-abandon", "critic-assess"):
         command = sub.add_parser(action, help="Explicit local operator critic action; remote work is never cancelled")
         command.add_argument("repository")
@@ -107,6 +113,25 @@ def dispatch(ctx, args):
             improvements, scope = Improvements(ledger.store), ledger.scope(args.repository)
             result = (improvements.inspect(scope, args.improvement_id) if action == "improvement-inspect"
                       else improvements.list(scope, args.run_id))
+        elif action == "tokens":
+            from .hermes_usage import SessionDBMetadataReader
+            from .token_report import TokenReport, format_report_human
+            try:
+                with SessionDBMetadataReader() as reader:
+                    result = TokenReport(ledger, reader).report(
+                        args.repository, run_id=args.run_id, session_id=args.session_id,
+                        include_workers=args.include_workers)
+            except LedgerError:
+                raise
+            except (ValueError, TypeError):
+                raise LedgerError("invalid_host_usage", "Host usage counters or scope metadata are invalid") from None
+            except Exception:
+                # Host import/I/O/lifecycle failures must be visible, but their
+                # raw messages may contain paths or credential-bearing endpoints.
+                raise LedgerError("host_usage_unavailable", "Host usage metadata is unavailable; no totals were inferred") from None
+            if args.format == "human":
+                print(format_report_human(result))
+                return 0
         elif action == "usage":
             from .usage import Usage
             result = Usage(ledger.store).report(ledger.scope(args.repository), args.run_id)

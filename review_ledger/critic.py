@@ -8,7 +8,7 @@ import re
 from typing import Protocol
 
 from .critic_contract import RESPONSE_SCHEMA, PROMPT_VERSION, load_prompt, validate_response
-from .models import Actor, ELIGIBLE_OUTCOMES, LedgerError, canonical, choice, digest, fields, integer, strings, text
+from .models import Actor, ELIGIBLE_OUTCOMES, LedgerError, behavior_report_hints, canonical, choice, digest, fields, integer, strings, text
 from .storage import Store, new_id, now
 
 
@@ -366,8 +366,10 @@ class Critic:
             if state in ("supported", "refuted"):
                 if not observations or basis == "none" or any(o["outcome"] not in ELIGIBLE_OUTCOMES for o in observations):
                     raise LedgerError("ineligible_evidence", "Missing, incomplete or blocked checks cannot support/refute an objection")
-                if basis == "behavior" and any(o["kind"] != "test" or o["outcome"] == "inspection" or not o["details"].strip() or not (o["environment"] or "").strip() for o in observations):
-                    raise LedgerError("incomplete_behavior_report", "Behavioral verification needs recorded test details and environment")
+                if basis == "behavior":
+                    hints = behavior_report_hints(observations)
+                    if hints["invalid_sources"]:
+                        raise LedgerError("incomplete_behavior_report", "Behavioral verification needs recorded test details and environment", hints=hints)
             conn.execute("UPDATE critic_assessments SET freshness='historical' WHERE objection_id=? AND freshness='current'", (objection_id,))
             ident = new_id("criticassessment")
             conn.execute("INSERT INTO critic_assessments VALUES (?,?,?,?,?,?,?,?,?,'current',?)", (ident, scope.repository_id, objection_id, state, basis, rationale, limitations, actor.session_id, "local_operator" if operator else "agent_reported", now()))

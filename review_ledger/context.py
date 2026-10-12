@@ -156,6 +156,10 @@ class Context:
                       "manifest_id": manifest_id, "content_digest": "0" * 64,
                       "notice": "Guidance is not evidence. Historical reports require current verification.",
                       "max_chars": budget}
+            from .workflow import WorkflowView
+            workflow = WorkflowView(self.store).summary(scope, run_id=run_id, limit=1, conn=conn)
+            if workflow["pending_use_count"] or workflow["pending_improvements_count"]:
+                result["workflow"] = workflow
             if external_refs or reference_selection["as_of"] is not None or reference_selection["offset"]:
                 result["reference_filter"] = self._reference_filter(reference_selection)
             selected = []
